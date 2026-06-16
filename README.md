@@ -90,8 +90,22 @@ uv pip install crewai crewai-tools
 
 # TODO
 
-* Manually check the design with Verilator and see how accurate the AI models were.
+* **DONE (6/16)** Manually check the design with Verilator and see how accurate the AI models were.
+    * Lots of major design flaws, both implementation and architecturally.
 
 * Find and install an open-source Formal Verification tool to manually check the AI's generated SVA code.
 
 * Refine and modify each agent and task as needed
+
+# Errors Encountered
+
+1) When running Verilator on fp16_mac.sv, there are already numerous errors.
+    * Incorrect ``` usage.
+    * The RTL agent mixed up naming conventions. The Ready_in signal was made an input when it should be an output, and vice-versa with Ready_out signal.
+    * Despite specifying the agents to use Systemverilog, they still wrote the file as traditional Verilog, which could cause more subtle bugs later on when synthesizing.
+    * Verification Engineer agent appeared to have written incorrect range specifiers for a property.
+    * Verification Agent did not match the file name to the module name.
+    * Verification agent completely forgot to define the stages in the sva file.
+    * Verification agent incorrectly placed the bind method-call inside the module.
+    * Verification agent made a huge architecture flaw in that the SVA model drives outputs, causing a situation where each model checks itself with no meaningful results.
+    * After fixing all syntax and immediate architecture problems, assertion on Line 155 in the SVA file was triggered, implying reset doesn't behave correctly.

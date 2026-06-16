@@ -1,4 +1,4 @@
-```systemverilog
+// systemverilog
 // File: fp16_mac.sv
 // Description: Mixed-precision FP16 Multiply-Accumulate (MAC) Unit
 // Author: [Your Name]
@@ -15,12 +15,12 @@ module fp16_mac (
     input wire [15:0] B,
     input wire [31:0] C,
     input wire Valid_in,
-    input wire Ready_in,
+    output wire Ready_in, // Fixing AI mistake
 
     // Output Ports
     output reg [31:0] D,
     output reg Valid_out,
-    output reg Ready_out,
+    input wire Ready_out, // Fixing AI mistake
 
     // Exception Outputs
     output reg Overflow,
@@ -104,11 +104,10 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 // Stage 4: Final Rounding and Exception Handling
-always @(posedge clk or negedge rst_n) begin
+always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         D <= 32'b0;
         Valid_out <= 1'b0;
-        Ready_out <= 1'b0;
         Overflow <= 1'b0;
         Underflow <= 1'b0;
         NaN <= 1'b0;
@@ -116,15 +115,13 @@ always @(posedge clk or negedge rst_n) begin
         // Apply RNE rounding and detect exceptions
         D <= $rtoi(D_temp);
         Valid_out <= 1'b1;
-        Ready_out <= 1'b1;
 
         // Exception Handling
-        Overflow = (D_temp > 32'h7F7FFFFF); // Max FP32 value
-        Underflow = (D_temp < 32'h00800000); // Min FP32 value
-        NaN = (A_reg[15] && A_reg[14:0] == 15'b0) || (B_reg[15] && B_reg[14:0] == 15'b0);
+        Overflow <= (D_temp > 32'h7F7FFFFF); // Max FP32 value
+        Underflow <= (D_temp < 32'h00800000); // Min FP32 value
+        NaN <= (A_reg[15] && A_reg[14:0] == 15'b0) || (B_reg[15] && B_reg[14:0] == 15'b0);
     end else begin
         Valid_out <= 1'b0;
-        Ready_out <= 1'b0;
     end
 end
 
@@ -132,6 +129,6 @@ end
 assign Ready_in = stage == STAGE_1;
 
 endmodule
-```
 
-This SystemVerilog module implements a mixed-precision FP16 MAC unit with four pipeline stages as specified. It includes input handling, multiply, add, and final rounding stages, along with exception handling for overflow, underflow, and NaNs. The module is designed to be synthesizable and follows industry-standard practices for clean and efficient implementation.
+
+// This SystemVerilog module implements a mixed-precision FP16 MAC unit with four pipeline stages as specified. It includes input handling, multiply, add, and final rounding stages, along with exception handling for overflow, underflow, and NaNs. The module is designed to be synthesizable and follows industry-standard practices for clean and efficient implementation.

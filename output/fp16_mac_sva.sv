@@ -1,4 +1,4 @@
-```systemverilog
+// systemverilog
 // File: fp16_mac_checker.sv
 // Description: Formal Verification Checker for FP16 Multiply-Accumulate (MAC) Unit
 // Author: [Your Name]
@@ -6,7 +6,7 @@
 
 `timescale 1ns / 1ps
 
-module fp16_mac_checker (
+module fp16_mac_sva (
     input wire clk,
     input wire rst_n,
 
@@ -20,7 +20,7 @@ module fp16_mac_checker (
     // Output Ports
     output reg [31:0] D,
     output reg Valid_out,
-    output reg Ready_out,
+    input wire Ready_out,
 
     // Exception Outputs
     output reg Overflow,
@@ -28,20 +28,6 @@ module fp16_mac_checker (
     output reg NaN
 );
 
-// Bind the checker to the fp16_mac module
-bind fp16_mac fp16_mac_checker #(.clk(clk), .rst_n(rst_n)) inst_fp16_mac_checker (
-    .A(A),
-    .B(B),
-    .C(C),
-    .Valid_in(Valid_in),
-    .Ready_in(Ready_in),
-    .D(D),
-    .Valid_out(Valid_out),
-    .Ready_out(Ready_out),
-    .Overflow(Overflow),
-    .Underflow(Underflow),
-    .NaN(NaN)
-);
 
 // Internal Signals
 reg [15:0] A_reg, B_reg;
@@ -52,6 +38,11 @@ reg [31:0] sum_fp32;
 reg [31:0] D_temp;
 reg [1:0] stage;
 reg [1:0] next_stage;
+
+localparam [1:0] STAGE_1 = 2'b00;
+localparam [1:0] STAGE_2 = 2'b01;
+localparam [1:0] STAGE_3 = 2'b10;
+localparam [1:0] STAGE_4 = 2'b11;
 
 // Pipeline Registers
 always @(posedge clk or negedge rst_n) begin
@@ -117,7 +108,6 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         D <= 32'b0;
         Valid_out <= 1'b0;
-        Ready_out <= 1'b0;
         Overflow <= 1'b0;
         Underflow <= 1'b0;
         NaN <= 1'b0;
@@ -125,20 +115,25 @@ always @(posedge clk or negedge rst_n) begin
         // Apply RNE rounding and detect exceptions
         D <= $rtoi(D_temp);
         Valid_out <= 1'b1;
-        Ready_out <= 1'b1;
 
         // Exception Handling
-        Overflow = (D_temp > 32'h7F7FFFFF); // Max FP32 value
-        Underflow = (D_temp < 32'h00800000); // Min FP32 value
-        NaN = (A_reg[15] && A_reg[14:0] == 15'b0) || (B_reg[15] && B_reg[14:0] == 15'b0);
+        Overflow <= (D_temp > 32'h7F7FFFFF); // Max FP32 value
+        Underflow <= (D_temp < 32'h00800000); // Min FP32 value
+        NaN <= (A_reg[15] && A_reg[14:0] == 15'b0) || (B_reg[15] && B_reg[14:0] == 15'b0);
     end else begin
         Valid_out <= 1'b0;
-        Ready_out <= 1'b0;
     end
 end
 
+// Incorrect coding from AI
 // Backpressure Handling
-assign Ready_in = stage == STAGE_1;
+//assign Ready_in = stage == STAGE_1;
+
+property check_ready_in;
+    @(posedge clk) disable iff (!rst_n)
+    Ready_in == (stage == STAGE_1);
+endproperty
+assert property (check_ready_in);
 
 // Protocol Compliance (valid/ready handshake stability properties)
 property valid_ready_handshake;
@@ -226,4 +221,4 @@ cover property (@(posedge clk) disable iff (!rst_n)
     rst_n && Valid_in_d1); // Reset during processing at each stage
 
 endmodule
-```
+//```
