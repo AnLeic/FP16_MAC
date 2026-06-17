@@ -97,6 +97,8 @@ uv pip install crewai crewai-tools
 
 * Refine and modify each agent and task as needed
 
+* Figure out how to spin up an MCP to enhance team capability
+
 # Errors Encountered
 
 1) When running Verilator on fp16_mac.sv, there are already numerous errors.
@@ -109,3 +111,9 @@ uv pip install crewai crewai-tools
     * Verification agent incorrectly placed the bind method-call inside the module.
     * Verification agent made a huge architecture flaw in that the SVA model drives outputs, causing a situation where each model checks itself with no meaningful results.
     * After fixing all syntax and immediate architecture problems, assertion on Line 155 in the SVA file was triggered, implying reset doesn't behave correctly.
+
+# Experiments
+* Swapped Qwen2.5-coder:14b for Qwen2.5-coder:32b. Already seeing promising results in that the code written is actually Systemverilog and not just Verilog with a .sv extension. However conversational responses are starting to appear in files. In the long run, this just a minor nuisance requiring vigilance.
+
+    *Using Qwen3-coder:30b instead seems much more promising. Actual Systemverilog, blocking statements aren't used within always_ff blocks on first-go. The junior engineer forgot to close off the testbench module and a couple tasks. (Is it emulating a junior employee too well?) A deeper dive behind the model reveals it utilizes an MoE architecture, resulting in much faster inference at less VRAM cost.
+

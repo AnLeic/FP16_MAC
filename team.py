@@ -1,15 +1,16 @@
 import os
 from crewai import Crew, LLM, Process, Agent, Task
 
-os.environ["OPENAI_MODEL_NAME"] = "ollama/qwen2.5-coder:14b-16k" # Ensure we don't use GPT to enforce data security
+os.environ["OPENAI_MODEL_NAME"] = "ollama/qwen3-coder:30b-16k" # Ensure we don't use GPT to enforce data security
 os.environ["OPENAI_API_KEY"] = "ollama"
 os.environ["OPENAI_BASE_URL"] = "http://localhost:11434"
 os.environ["OPENAI_API_BASE"] = "http://localhost:11434"
 
-manager_psyche = "ollama/deepseek-r1:32b-16k" # Used for complex reasoning and planning
-engineer_psyche = "ollama/qwen2.5-coder:14b-16k" # Specializes in adherence to syntax and standards
+#manager_psyche = "ollama/deepseek-r1:32b-16k" # Used for complex reasoning and planning
+engineer_psyche = "ollama/qwen3-coder:30b-16k" # Very promising. Going to stick with this and see where it takes the project
 
-llm_architect = LLM(model=manager_psyche, base_url="http://localhost:11434", temperature=0.4)
+#llm_architect = LLM(model=manager_psyche, base_url="http://localhost:11434", temperature=0.4)
+llm_architect = LLM(model=engineer_psyche, base_url="http://localhost:11434", temperature=0.4)
 llm_engineer = LLM(model=engineer_psyche, base_url="http://localhost:11434", temperature=0.2)
 
 local_embedder = { # Again, enforce data security
@@ -38,7 +39,7 @@ rtl_engie = Agent(
     backstory="You write pristine, industry-standard SystemVerilog. You avoid common synthesis traps,"
         "properly implement synchronous resets, pipeline data paths smoothly, and comment code meticulously "
         "so verification teams can easily read it.",
-    llm=llm_engineer,
+    llm=llm_architect, # Higher reasoning might be needed
     verbose=True,
     allow_delegation=False,
     memory=False
@@ -66,7 +67,21 @@ verif_engie = Agent(
     ),
     llm=llm_engineer,
     verbose=True,
-    allow_delegation=False
+    allow_delegation=False,
+    memory=False
+)
+
+testing_agent = Agent(
+    role="Junior Verification Engineer",
+    goal="Inspect RTL and SVA designs and write one or more testbenches that implements their plans and intent.",
+    backstory=(
+        "You are a fresh and eager employee assigned to write testbenches."
+        "You want to earn your place and make a name for yourself, so you rigorously analyze the RTL and Verification files to ensure you write quality testbenches."
+    ),
+    llm=llm_engineer,
+    verbose=True,
+    allow_delegation=False,
+    memory=False
 )
 
 specification_task = Task(
@@ -86,12 +101,23 @@ specification_task = Task(
     output_file="output/spec.md"
 )
 
-rtl_task = Task(
+rtl_firstpass_task = Task(
     description=(
-        "Read the microarchitecture specification generated in output/spec.md."
-        "Write a fully synthesizable SystemVerilog module implementing the mixed-precision FP16 MAC unit."
-        "Ensure pipeline registers are clearly defined, ready/valid backpressure is handled without losing data,"
-        "and exception outputs are registered."
+        "Read the specification document about an FP16 MAC module in output/spec.md. "
+        "You will be dealing with floating-point arithmetic, which involves handling mantissas, exponents and other tricky calculation. "
+        "You will need to figure out how to handle two FP16 inputs, an FP32 input and output. "
+        "Write a Systemverilog module that keeps in mind these challenges. "
+    ),
+    agent=rtl_engie,
+    expected_output="A synthesizable Systemverilog file (.sv) with comments explaining design choices and their reasoning.",
+    output_file="output/fp16_mac.sv"
+)
+
+rtl_secondpass_task = Task(
+    description=(
+        "Begin by inspecting the file output/fp16_mac.sv. "
+        "Work through the complex floating point arithmetic and determine if they are mathematically correct. "
+        "If they are incorrect, modify or rewrite relevant RTL code. If they are correct, then complete the rest of the module as needed."
     ),
     agent=rtl_engie,
     expected_output="Pragmatic, cleanly structured, and commented SystemVerilog (.sv) code for the module.",
@@ -111,7 +137,7 @@ plan_verification_task = Task(
 
 verification_task = Task(
     description=(
-        "Using the formal verification plan from output/vplan.md and the RTL from output/fp16_mac.sv,"
+        "Using the formal verification plan from output/verification_plan.md and the RTL from output/fp16_mac.sv, "
         "write a complete SystemVerilog assertion file or bind module."
         "Include properties to check:"
         "- Protocol compliance (valid/ready handshake stability properties)."
@@ -124,11 +150,21 @@ verification_task = Task(
     output_file="output/fp16_mac_sva.sv"
 )
 
+write_testbench_task = Task(
+    description=(
+        "Thoroughly inspect the following files: output/spec.md, output/fp16_mac.sv, output/verification_plan.md and output/fp16_mac_sva.sv. "
+        "Write at least one testbench file that implements the verification plan and tests that the RTL correctly implements the behavior outlined in the specification."
+    ),
+    expected_output="A Systemverilog (.sv) file that compiles correctly and tests the RTL file against both the verification plan and specification document.",
+    agent=testing_agent,
+    output_file="output/testbench.sv"
+)
+
 
 if __name__ == "__main__":
     crew = Crew(
-    agents=[lead_architect, rtl_engie, lead_verification, verif_engie],
-    tasks=[specification_task, rtl_task, plan_verification_task, verification_task],
+    agents=[lead_architect, rtl_engie, lead_verification, verif_engie, testing_agent],
+    tasks=[specification_task, rtl_firstpass_task, rtl_secondpass_task, plan_verification_task, verification_task, write_testbench_task],
     verbose=True,
     process=Process.sequential,
     embedder=local_embedder,

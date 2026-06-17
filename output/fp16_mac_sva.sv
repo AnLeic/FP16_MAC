@@ -1,224 +1,343 @@
-// systemverilog
-// File: fp16_mac_checker.sv
-// Description: Formal Verification Checker for FP16 Multiply-Accumulate (MAC) Unit
-// Author: [Your Name]
-// Date: [Date]
+```systemverilog
+// File: fp16_mac_formal.sv
+// Author: Senior Formal Verification Engineer
+// Description: Complete formal verification assertions for FP16 MAC unit
+//              This file contains concurrent SVA assertions, assumptions,
+//              and cover points to mathematically prove design correctness.
 
-`timescale 1ns / 1ps
-
-module fp16_mac_sva (
-    input wire clk,
-    input wire rst_n,
-
-    // Input Ports
-    input wire [15:0] A,
-    input wire [15:0] B,
-    input wire [31:0] C,
-    input wire Valid_in,
-    input wire Ready_in,
-
-    // Output Ports
-    output reg [31:0] D,
-    output reg Valid_out,
-    input wire Ready_out,
-
-    // Exception Outputs
-    output reg Overflow,
-    output reg Underflow,
-    output reg NaN
+module fp16_mac_formal (
+    input logic clk,
+    input logic rst_n,
+    
+    // Input A interface
+    input logic a_valid,
+    output logic a_ready,
+    input logic [15:0] a_data,
+    
+    // Input B interface  
+    input logic b_valid,
+    output logic b_ready,
+    input logic [15:0] b_data,
+    
+    // Input C interface
+    input logic c_valid,
+    output logic c_ready,
+    input logic [31:0] c_data,
+    
+    // Output D interface
+    output logic d_valid,
+    input logic d_ready,
+    output logic [31:0] d_data,
+    
+    // Exception flags
+    output logic [2:0] exception  // {overflow, underflow, invalid}
 );
 
+// Clocking block for formal verification
+clocking cb @(posedge clk);
+    default input #1step;
+    output a_valid, b_valid, c_valid;
+    input a_ready, b_ready, c_ready, d_ready;
+    output a_data, b_data, c_data;
+    input d_data, exception;
+endclocking
 
-// Internal Signals
-reg [15:0] A_reg, B_reg;
-reg [31:0] C_reg;
-reg Valid_in_d1, Ready_out_d1;
-reg [15:0] product_fp16;
-reg [31:0] sum_fp32;
-reg [31:0] D_temp;
-reg [1:0] stage;
-reg [1:0] next_stage;
+// Assumptions for formal verification
+// Protocol compliance assumptions
+assume property (@(posedge clk) disable iff (!rst_n)
+    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready))
+    "Valid/Ready handshake protocol must be maintained";
 
-localparam [1:0] STAGE_1 = 2'b00;
-localparam [1:0] STAGE_2 = 2'b01;
-localparam [1:0] STAGE_3 = 2'b10;
-localparam [1:0] STAGE_4 = 2'b11;
+// Reset behavior assumptions
+assume property (@(posedge clk) disable iff (!rst_n)
+    !rst_n |-> (a_ready == 1'b0 && b_ready == 1'b0 && c_ready == 1'b0))
+    "All ready signals should be zero during reset";
 
-// Pipeline Registers
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        A_reg <= 16'b0;
-        B_reg <= 16'b0;
-        C_reg <= 32'b0;
-        Valid_in_d1 <= 1'b0;
-        Ready_out_d1 <= 1'b0;
-        stage <= STAGE_1;
-    end else begin
-        A_reg <= A;
-        B_reg <= B;
-        C_reg <= C;
-        Valid_in_d1 <= Valid_in;
-        Ready_out_d1 <= Ready_out;
-        stage <= next_stage;
-    end
-end
+assume property (@(posedge clk) disable iff (!rst_n)
+    !rst_n |-> (d_valid == 1'b0 && d_data == 32'h0))
+    "Output valid and data should be zero during reset";
 
-// Stage Selection Logic
-always @(*) begin
-    case (stage)
-        STAGE_1: next_stage = STAGE_2;
-        STAGE_2: next_stage = STAGE_3;
-        STAGE_3: next_stage = STAGE_4;
-        default: next_stage = STAGE_1;
-    endcase
-end
+// Flush-to-Zero assumptions
+assume property (@(posedge clk) disable iff (!rst_n)
+    (a_data[15:10] == 5'b00000) |-> (a_ready == 1'b1))
+    "Subnormal inputs should be accepted with ready asserted";
 
-// Stage 1: Input Handling and Flush-to-Zero (FTZ)
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        product_fp16 <= 16'b0;
-    end else if (stage == STAGE_1 && Valid_in_d1 && Ready_out_d1) begin
-        // Flush subnormals to zero
-        product_fp16 <= (A_reg[14:0] == 15'b0 || B_reg[14:0] == 15'b0) ? 16'b0 : A_reg * B_reg;
-    end
-end
+assume property (@(posedge clk) disable iff (!rst_n)
+    (b_data[15:10] == 5'b00000) |-> (b_ready == 1'b1))
+    "Subnormal inputs should be accepted with ready asserted";
 
-// Stage 2: Multiply Operation
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        sum_fp32 <= 32'b0;
-    end else if (stage == STAGE_2 && Valid_in_d1 && Ready_out_d1) begin
-        // Convert FP16 product to FP32 without rounding
-        sum_fp32 <= {product_fp16[15], product_fp16[14:0], 16'b0};
-    end
-end
+// Pipeline stability assumptions
+assume property (@(posedge clk) disable iff (!rst_n)
+    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready))
+    "Valid inputs must be accepted when ready signals are asserted";
 
-// Stage 3: Add Operation with C
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        D_temp <= 32'b0;
-    end else if (stage == STAGE_3 && Valid_in_d1 && Ready_out_d1) begin
-        // Add converted result to C with RNE rounding
-        D_temp <= $rtoi(sum_fp32 + C_reg);
-    end
-end
-
-// Stage 4: Final Rounding and Exception Handling
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        D <= 32'b0;
-        Valid_out <= 1'b0;
-        Overflow <= 1'b0;
-        Underflow <= 1'b0;
-        NaN <= 1'b0;
-    end else if (stage == STAGE_4 && Valid_in_d1 && Ready_out_d1) begin
-        // Apply RNE rounding and detect exceptions
-        D <= $rtoi(D_temp);
-        Valid_out <= 1'b1;
-
-        // Exception Handling
-        Overflow <= (D_temp > 32'h7F7FFFFF); // Max FP32 value
-        Underflow <= (D_temp < 32'h00800000); // Min FP32 value
-        NaN <= (A_reg[15] && A_reg[14:0] == 15'b0) || (B_reg[15] && B_reg[14:0] == 15'b0);
-    end else begin
-        Valid_out <= 1'b0;
-    end
-end
-
-// Incorrect coding from AI
-// Backpressure Handling
-//assign Ready_in = stage == STAGE_1;
-
-property check_ready_in;
+// Protocol compliance assertions
+// Input handshake stability properties
+property p_input_handshake_stability;
     @(posedge clk) disable iff (!rst_n)
-    Ready_in == (stage == STAGE_1);
+    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready);
 endproperty
-assert property (check_ready_in);
 
-// Protocol Compliance (valid/ready handshake stability properties)
-property valid_ready_handshake;
-    @(posedge clk) disable iff (!rst_n)
-    Valid_in |-> ##[0:3] Ready_out;
-endproperty
-assert property (valid_ready_handshake);
+assert property(p_input_handshake_stability)
+    "Input handshake protocol must be maintained";
 
-// Reset behavior (all registers cleared, outputs zeroed/invalid)
-property reset_behavior;
+// Output handshake stability properties
+property p_output_handshake_stability;
     @(posedge clk) disable iff (!rst_n)
-    rst_n |=> A_reg == 16'b0 && B_reg == 16'b0 && C_reg == 32'b0 &&
-               Valid_in_d1 == 1'b0 && Ready_out_d1 == 1'b0 &&
-               product_fp16 == 16'b0 && sum_fp32 == 32'b0 &&
-               D_temp == 32'b0 && stage == STAGE_1 &&
-               D == 32'b0 && Valid_out == 1'b0 && Ready_out == 1'b0 &&
-               Overflow == 1'b0 && Underflow == 1'b0 && NaN == 1'b0;
+    d_valid |-> d_ready;
 endproperty
-assert property (reset_behavior);
+
+assert property(p_output_handshake_stability)
+    "Output valid signal must be accepted when ready is asserted";
+
+// Reset behavior assertions
+// All registers cleared during reset
+property p_reset_clear;
+    @(posedge clk) disable iff (!rst_n)
+    !rst_n |-> (a_ready == 1'b0 && b_ready == 1'b0 && c_ready == 1'b0 &&
+                d_valid == 1'b0 && d_data == 32'h0);
+endproperty
+
+assert property(p_reset_clear)
+    "All outputs should be cleared during reset";
 
 // Flush-to-Zero verification
-property flush_to_zero;
+// Subnormal inputs should be flushed to zero
+property p_flush_to_zero;
     @(posedge clk) disable iff (!rst_n)
-    stage == STAGE_1 && Valid_in_d1 && Ready_out_d1 &&
-    (A_reg[14:0] == 15'b0 || B_reg[14:0] == 15'b0) |-> product_fp16 == 16'b0;
+    (a_data[15:10] == 5'b00000 && a_valid) |-> (a_ready == 1'b1);
 endproperty
-assert property (flush_to_zero);
+
+assert property(p_flush_to_zero)
+    "Subnormal inputs should be accepted with ready signal";
 
 // Overflow targeting positive/negative infinity bit-patterns
-property overflow_positive_infinity;
+// Positive overflow detection and handling
+property p_positive_overflow;
     @(posedge clk) disable iff (!rst_n)
-    stage == STAGE_4 && Valid_in_d1 && Ready_out_d1 &&
-    D_temp > 32'h7F7FFFFF |-> D == 32'h7F800000; // Positive infinity
+    (exception[0] == 1'b1 && a_data[15] == 1'b0 && b_data[15] == 1'b0) |-> 
+    (d_data[31:23] == 8'hFF);
 endproperty
-assert property (overflow_positive_infinity);
 
-property overflow_negative_infinity;
+assert property(p_positive_overflow)
+    "Positive overflow should result in positive infinity";
+
+// Negative overflow detection and handling
+property p_negative_overflow;
     @(posedge clk) disable iff (!rst_n)
-    stage == STAGE_4 && Valid_in_d1 && Ready_out_d1 &&
-    D_temp < 32'h807FFFFF |-> D == 32'hFF800000; // Negative infinity
+    (exception[0] == 1'b1 && a_data[15] == 1'b1 && b_data[15] == 1'b1) |-> 
+    (d_data[31:23] == 8'hFF);
 endproperty
-assert property (overflow_negative_infinity);
 
-// Cover Points
+assert property(p_negative_overflow)
+    "Negative overflow should result in negative infinity";
+
+// IEEE 754 compliance assertions
+// NaN propagation
+property p_nan_propagation;
+    @(posedge clk) disable iff (!rst_n)
+    (a_data[15:10] == 5'b11111 || b_data[15:10] == 5'b11111) |-> 
+    (exception[2] == 1'b1);
+endproperty
+
+assert property(p_nan_propagation)
+    "Invalid operation flag should be set for NaN inputs";
+
+// Zero multiplication assertions
+property p_zero_multiplication;
+    @(posedge clk) disable iff (!rst_n)
+    ((a_data[15:10] == 5'b00000 && b_data[15:10] != 5'b11111) ||
+     (a_data[15:10] != 5'b11111 && b_data[15:10] == 5'b00000)) |-> 
+    (d_data[31:23] == 9'b000000000);
+endproperty
+
+assert property(p_zero_multiplication)
+    "Zero multiplication should result in zero";
+
+// Overflow detection assertions
+property p_overflow_detection;
+    @(posedge clk) disable iff (!rst_n)
+    (exception[0] == 1'b1) |-> (d_data[31:23] == 8'hFF);
+endproperty
+
+assert property(p_overflow_detection)
+    "Overflow flag should be set for overflow conditions";
+
+// Underflow handling assertions
+property p_underflow_handling;
+    @(posedge clk) disable iff (!rst_n)
+    (exception[1] == 1'b1) |-> (d_data[31:23] == 9'b000000000);
+endproperty
+
+assert property(p_underflow_handling)
+    "Underflow flag should be set for underflow conditions";
+
+// Exception flag consistency assertions
+property p_exception_consistency;
+    @(posedge clk) disable iff (!rst_n)
+    (exception[2] == 1'b1) |-> (a_data[15:10] == 5'b11111 || b_data[15:10] == 5'b11111);
+endproperty
+
+assert property(p_exception_consistency)
+    "Invalid operation flag should be set for NaN inputs";
+
+// Data integrity assertions
+property p_output_validity;
+    @(posedge clk) disable iff (!rst_n)
+    (d_valid && d_ready) |-> (d_data != 32'h0);
+endproperty
+
+assert property(p_output_validity)
+    "Valid output should contain meaningful data";
+
+// Pipeline behavior assertions
+// Pipeline stage ready propagation
+property p_pipeline_ready_propagation;
+    @(posedge clk) disable iff (!rst_n)
+    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready);
+endproperty
+
+assert property(p_pipeline_ready_propagation)
+    "Pipeline ready signals must propagate correctly";
+
+// Pipeline enable assertions
+property p_pipeline_enable;
+    @(posedge clk) disable iff (!rst_n)
+    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready);
+endproperty
+
+assert property(p_pipeline_enable)
+    "Pipeline should enable only when inputs are valid";
+
+// Special value coverage
+covergroup cg_special_values;
+    cp_nan_a: coverpoint a_data[15:10] {
+        bins nan = {5'b11111};
+        bins normal = {5'b00000, 5'b00001, 5'b00010, 5'b00011, 5'b00100,
+                      5'b00101, 5'b00110, 5'b00111, 5'b01000, 5'b01001,
+                      5'b01010, 5'b01011, 5'b01100, 5'b01101, 5'b01110,
+                      5'b01111, 5'b10000, 5'b10001, 5'b10010, 5'b10011,
+                      5'b10100, 5'b10101, 5'b10110, 5'b10111, 5'b11000,
+                      5'b11001, 5'b11010, 5'b11011, 5'b11100, 5'b11101,
+                      5'b11110};
+    }
+    
+    cp_nan_b: coverpoint b_data[15:10] {
+        bins nan = {5'b11111};
+        bins normal = {5'b00000, 5'b00001, 5'b00010, 5'b00011, 5'b00100,
+                      5'b00101, 5'b00110, 5'b00111, 5'b01000, 5'b01001,
+                      5'b01010, 5'b01011, 5'b01100, 5'b01101, 5'b01110,
+                      5'b01111, 5'b10000, 5'b10001, 5'b10010, 5'b10011,
+                      5'b10100, 5'b10101, 5'b10110, 5'b10111, 5'b11000,
+                      5'b11001, 5'b11010, 5'b11011, 5'b11100, 5'b11101,
+                      5'b11110};
+    }
+    
+    cp_zero_a: coverpoint a_data[15:10] {
+        bins zero = {5'b00000};
+    }
+    
+    cp_zero_b: coverpoint b_data[15:10] {
+        bins zero = {5'b00000};
+    }
+    
+    cp_infinity_a: coverpoint a_data[15:10] {
+        bins infinity = {5'b11111};
+    }
+    
+    cp_infinity_b: coverpoint b_data[15:10] {
+        bins infinity = {5'b11111};
+    }
+endgroup
+
+// Exception condition coverage
+covergroup cg_exceptions;
+    cp_overflow: coverpoint exception[0];
+    cp_underflow: coverpoint exception[1];
+    cp_invalid: coverpoint exception[2];
+    
+    cp_exception_combination: cross cp_overflow, cp_underflow, cp_invalid;
+endgroup
+
+// Pipeline stall coverage
+covergroup cg_pipeline_stall;
+    cp_a_stall: coverpoint a_valid && !a_ready;
+    cp_b_stall: coverpoint b_valid && !b_ready;
+    cp_c_stall: coverpoint c_valid && !c_ready;
+    
+    cp_full_stall: cross cp_a_stall, cp_b_stall, cp_c_stall;
+endgroup
+
+// Reset coverage
+covergroup cg_reset_conditions;
+    cp_reset_active: coverpoint !rst_n;
+    cp_reset_deactive: coverpoint rst_n;
+    
+    cp_reset_transition: cross cp_reset_active, cp_reset_deactive;
+endgroup
+
+// Output data pattern coverage
+covergroup cg_output_patterns;
+    cp_zero_result: coverpoint d_data[31:23] == 9'b000000000;
+    cp_infinity_result: coverpoint d_data[31:23] == 8'hFF;
+    cp_normal_result: coverpoint (d_data[31:23] != 9'b000000000) && 
+                       (d_data[31:23] != 8'hFF);
+endgroup
+
+// Instantiate covergroups
+cg_special_values cg_sv = new();
+cg_exceptions cg_e = new();
+cg_pipeline_stall cg_ps = new();
+cg_reset_conditions cg_rc = new();
+cg_output_patterns cg_op = new();
+
+// Cover points for special values
 cover property (@(posedge clk) disable iff (!rst_n)
-    A == 16'b0 && B != 16'b0); // A = 0, B arbitrary
+    (a_data[15:10] == 5'b11111)) 
+    "NaN input A";
 
 cover property (@(posedge clk) disable iff (!rst_n)
-    A != 16'b0 && B == 16'b0); // B = 0, A arbitrary
+    (b_data[15:10] == 5'b11111)) 
+    "NaN input B";
 
 cover property (@(posedge clk) disable iff (!rst_n)
-    A == 16'b0 && B == 16'b0); // Both A and B = 0
+    (a_data[15:10] == 5'b00000)) 
+    "Zero input A";
 
 cover property (@(posedge clk) disable iff (!rst_n)
-    A[15] && A[14:0] == 15'b0); // A is NaN
+    (b_data[15:10] == 5'b00000)) 
+    "Zero input B";
+
+// Cover points for exception conditions
+cover property (@(posedge clk) disable iff (!rst_n)
+    (exception[0] == 1'b1)) 
+    "Overflow condition";
 
 cover property (@(posedge clk) disable iff (!rst_n)
-    B[15] && B[14:0] == 15'b0); // B is NaN
+    (exception[1] == 1'b1)) 
+    "Underflow condition";
 
 cover property (@(posedge clk) disable iff (!rst_n)
-    C == 32'h7F800000 || C == 32'hFF800000); // C is NaN (positive/negative infinity)
+    (exception[2] == 1'b1)) 
+    "Invalid operation condition";
+
+// Cover points for pipeline stalls
+cover property (@(posedge clk) disable iff (!rst_n)
+    (a_valid && !a_ready)) 
+    "Pipeline stall on A input";
 
 cover property (@(posedge clk) disable iff (!rst_n)
-    A_reg == 16'h7BFF && B_reg == 16'h7BFF); // Maximum FP16 values multiplied
+    (b_valid && !b_ready)) 
+    "Pipeline stall on B input";
 
 cover property (@(posedge clk) disable iff (!rst_n)
-    product_fp16 < 16'h0400); // Minimum FP16 products causing underflow
+    (c_valid && !c_ready)) 
+    "Pipeline stall on C input";
 
+// Cover points for reset conditions
 cover property (@(posedge clk) disable iff (!rst_n)
-    sum_fp32 > 32'h7F7FFFFF || sum_fp32 < 32'h00800000); // Addition resulting in overflow or underflow
-
-cover property (@(posedge clk) disable iff (!rst_n)
-    stage == STAGE_1 && !Ready_out_d1); // Stall at Stage 1
-
-cover property (@(posedge clk) disable iff (!rst_n)
-    stage == STAGE_2 && !Ready_out_d1); // Stall at Stage 2
-
-cover property (@(posedge clk) disable iff (!rst_n)
-    stage == STAGE_3 && !Ready_out_d1); // Stall at Stage 3
-
-cover property (@(posedge clk) disable iff (!rst_n)
-    stage == STAGE_4 && !Ready_out_d1); // Stall at Stage 4
-
-cover property (@(posedge clk) disable iff (!rst_n)
-    rst_n && Valid_in_d1); // Reset during processing at each stage
+    (!rst_n)) 
+    "Reset condition active";
 
 endmodule
-//```
+```

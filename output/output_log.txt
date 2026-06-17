@@ -1,0 +1,66 @@
+%Warning-UNDRIVEN: tb.sv:4:7: Signal is not driven: 'clk'
+                            : ... note: In instance 'tb'
+    4 | logic clk, rst_n;
+      |       ^~~
+                   ... For warning description see https://verilator.org/warn/UNDRIVEN?v=5.048
+                   ... Use "/* verilator lint_off UNDRIVEN */" and lint_on around source to disable this message.
+%Warning-UNDRIVEN: tb.sv:4:12: Signal is not driven: 'rst_n'
+                             : ... note: In instance 'tb'
+    4 | logic clk, rst_n;
+      |            ^~~~~
+%Warning-UNDRIVEN: tb.sv:5:14: Signal is not driven: 'A'
+                             : ... note: In instance 'tb'
+    5 | logic [15:0] A, B;
+      |              ^
+%Warning-UNDRIVEN: tb.sv:5:17: Signal is not driven: 'B'
+                             : ... note: In instance 'tb'
+    5 | logic [15:0] A, B;
+      |                 ^
+%Warning-UNDRIVEN: tb.sv:6:14: Signal is not driven: 'C'
+                             : ... note: In instance 'tb'
+    6 | logic [31:0] C;
+      |              ^
+%Warning-UNDRIVEN: tb.sv:7:7: Signal is not driven: 'Valid_in'
+                            : ... note: In instance 'tb'
+    7 | logic Valid_in, Ready_in;
+      |       ^~~~~~~~
+%Warning-UNUSEDSIGNAL: tb.sv:7:17: Signal is not used: 'Ready_in'
+                                 : ... note: In instance 'tb'
+    7 | logic Valid_in, Ready_in;
+      |                 ^~~~~~~~
+                       ... For warning description see https://verilator.org/warn/UNUSEDSIGNAL?v=5.048
+                       ... Use "/* verilator lint_off UNUSEDSIGNAL */" and lint_on around source to disable this message.
+%Warning-UNUSEDSIGNAL: tb.sv:8:13: Signal is not used: 'D'
+                                 : ... note: In instance 'tb'
+    8 | logic[31:0] D;
+      |             ^
+%Warning-UNUSEDSIGNAL: tb.sv:9:7: Signal is not used: 'Valid_out'
+                                : ... note: In instance 'tb'
+    9 | logic Valid_out, Ready_out, Overflow, Underflow, NaN;
+      |       ^~~~~~~~~
+%Warning-UNDRIVEN: tb.sv:9:18: Signal is not driven: 'Ready_out'
+                             : ... note: In instance 'tb'
+    9 | logic Valid_out, Ready_out, Overflow, Underflow, NaN;
+      |                  ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: tb.sv:9:29: Signal is not used: 'Overflow'
+                                 : ... note: In instance 'tb'
+    9 | logic Valid_out, Ready_out, Overflow, Underflow, NaN;
+      |                             ^~~~~~~~
+%Warning-UNUSEDSIGNAL: tb.sv:9:39: Signal is not used: 'Underflow'
+                                 : ... note: In instance 'tb'
+    9 | logic Valid_out, Ready_out, Overflow, Underflow, NaN;
+      |                                       ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: tb.sv:9:50: Signal is not used: 'NaN'
+                                 : ... note: In instance 'tb'
+    9 | logic Valid_out, Ready_out, Overflow, Underflow, NaN;
+      |                                                  ^~~
+%Warning-SYNCASYNCNET: tb.sv:4:12: Signal flopped as both synchronous and async: 'tb.rst_n'
+                       fp16_mac.sv:49:10: ... Location of async usage
+   49 |     if (!rst_n) begin
+      |          ^~~~~
+                       fp16_mac_sva.sv:133:34: ... Location of sync usage
+  133 |     @(posedge clk) disable iff (!rst_n)
+      |                                  ^~~~~
+                       ... For warning description see https://verilator.org/warn/SYNCASYNCNET?v=5.048
+                       ... Use "/* verilator lint_off SYNCASYNCNET */" and lint_on around source to disable this message.
+%Error: Exiting due to 14 warning(s)
