@@ -16,21 +16,25 @@ The following hardware and software has been disclosed with the intent on temper
 
 With the usage of the 7900 XTX, a 22GB quantized model of Deepseek-R1:32b and an as-is Qwen2.5-coder:14b can comfortably run with Ollama handling hot-loading. With the project, the time elapsed from command execution to completion is roughly 3 minutes and 35 seconds.
 
-## The Models
+## The Model
 
-* **Deepseek-R1:32B**. Although quantized to 22B, this model serves as an excellent method to take advantage of the 7900 XTX's 24 GB of VRAM, allowing the use of excellent reasoning ability.
+* ~~**Deepseek-R1:32B**. Although quantized to 22B, this model serves as an excellent method to take advantage of the 7900 XTX's 24 GB of VRAM, allowing the use of excellent reasoning ability.~~
 
-* **Qwen2.5:14B (Coder)**. This variant of the Qwen2.5 model is specialized for coding, giving much higher confidence in its ability to conform to expected syntax and standards with any language it's directed at.
+* ~~**Qwen2.5:14B (Coder)**. This variant of the Qwen2.5 model is specialized for coding, giving much higher confidence in its ability to conform to expected syntax and standards with any language it's directed at.~~
+
+    * Qwen3-30B (Coder): After some experimentation, this model contains an excellent blend of reasoning and coding ability due to its Mixture-of-Experts architecture.
+
+* Nomic-embed-text: Certain pipelines/functionality appear hardcoded to use a GPT model. Nomic has been used to handle token passing between agents as a bypass.
 
 ## The (AI) Team
 
-* Principle RTL Architect (lead_architect): Handles the drafting of specifications for a designated project. This has been assigned the Deepseek model to take advantage of its superior reasoning ability.
+* Principle RTL Architect (lead_architect): Handles the drafting of specifications for a designated project.
 
-* Senior Digital Design Engineer (rtl_engie): Responsible for reading the specification plan made by the Principle Architect and the subsequent RTL design in accordance with the specification. This has been given the Qwen model to ensure Systemverilog code that is accurate on first-generation and as close as industry-standard possible.
+* Senior Digital Design Engineer (rtl_engie): Responsible for reading the specification plan made by the Principle Architect and the subsequent RTL design in accordance with the specification.
 
-* Principle Verification Engineer (lead_verification): Given the responsibility of inspecting the overall specification document and the RTL design to then create a verification plan. This agent has been designated to favor Formal Verification over traditional or UVM-based methods. Since it's primary role is drafting plans, this has been given the Deepseek model.
+* Principle Verification Engineer (lead_verification): Given the responsibility of inspecting the overall specification document and the RTL design to then create a verification plan. This agent has been designated to favor Formal Verification over traditional or UVM-based methods.
 
-* Senior Formal Verification Engineer (verif_engie): Analyzes the verification plan and designs a formal verification file using Systemverilog Assertions (SVA). This has been given the Qwen model to ensure highly accurate syntax.
+* Senior Formal Verification Engineer (verif_engie): Analyzes the verification plan and designs a formal verification file using Systemverilog Assertions (SVA).
 
 ## The Hardware Goal: Mixed-Precision MAC
 
@@ -63,22 +67,25 @@ D = (A x B) + C
 
 ## Handling Context
 
-To handle large and multi-stage files, the context has been expanded to 16384. On Linux, do the following steps to increase the context window:
+For efficiency purposes on a 24GB 7900 XTX graphics card, the context has been expanded to 16384. On Linux, do the following steps to increase the context window:
 
 ```
-ollama pull deepseek-r1:32b
-ollama pull qwen2.5-coder:14b
+ollama pull qwen3-coder:30b
 ollama pull nomic-embed-text
 
-ollama run deepseek-r1:32b
+ollama run qwen3-coder:30b
 >>> /set parameter num_ctx 16384
->>> /save deepseek-r1:32b
+>>> /save qwen3-coder:30b-16k
 >>> /bye
+```
 
-ollama run qwen2.5-coder:14b
->>> /set parameter num_ctx 16384
->>> /save qwen2.5-coder:14b
->>> /bye
+## Software Setup
+
+It is recommended to setup a virtual Python environment to keep things contained and isolated:
+
+```
+sudo dnf install python3.11
+python3.11 -m venv .venv
 ```
 
 Next, to get the library and dependencies:
@@ -91,7 +98,7 @@ uv pip install crewai crewai-tools
 # TODO
 
 * **DONE (6/16)** Manually check the design with Verilator and see how accurate the AI models were.
-    * Lots of major design flaws, both implementation and architecturally.
+    * **(CHANGED 6/16)** ~~Lots of major design flaws, both implementation and architecturally.~~ Moving towards a single model.
 
 * Find and install an open-source Formal Verification tool to manually check the AI's generated SVA code.
 
@@ -115,5 +122,5 @@ uv pip install crewai crewai-tools
 # Experiments
 * Swapped Qwen2.5-coder:14b for Qwen2.5-coder:32b. Already seeing promising results in that the code written is actually Systemverilog and not just Verilog with a .sv extension. However conversational responses are starting to appear in files. In the long run, this just a minor nuisance requiring vigilance.
 
-    *Using Qwen3-coder:30b instead seems much more promising. Actual Systemverilog, blocking statements aren't used within always_ff blocks on first-go. The junior engineer forgot to close off the testbench module and a couple tasks. (Is it emulating a junior employee too well?) A deeper dive behind the model reveals it utilizes an MoE architecture, resulting in much faster inference at less VRAM cost.
+    * Using Qwen3-coder:30b instead seems much more promising. Actual Systemverilog, blocking statements aren't used within always_ff blocks on first-go. The junior engineer forgot to close off the testbench module and a couple tasks. (Is it emulating a junior employee too well?) A deeper dive behind the model reveals it utilizes an MoE architecture, resulting in much faster inference at less VRAM cost.
 
