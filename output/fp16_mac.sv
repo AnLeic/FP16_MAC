@@ -1,8 +1,8 @@
-```systemverilog
 // File: fp16_mac.sv
 // Author: Senior Digital Design Engineer
 // Description: FP16 MAC unit implementing IEEE 754 compliance for AI accelerators.
 //              Computes D = (A * B) + C where A,B are FP16, C,D are FP32.
+`timescale 1ns/1ps
 
 module fp16_mac (
     input  logic         clk,
@@ -55,7 +55,7 @@ logic [2:0]  stage0_exception, stage1_exception, stage2_exception;
 
 // Input handshake control signals
 logic        inputs_ready;
-logic        inputs_valid;
+//logic        inputs_valid;
 
 // Pipeline enable signals
 logic        pipe_enable;
@@ -203,20 +203,21 @@ function [31:0] fp16_to_fp32(input [15:0] fp16_val);
         result = {sign, 8'h00, 23'h000000};
     end else begin
         // Normal number
-        result = {sign, exp[4:0] + 5'd15, mantissa, 13'h000};
+        result = {sign, exp[4:0] + 5'd15, mantissa, 16'h000};
     end
 
     return result;
 endfunction
 
 // Generate input exceptions for FP16 inputs
+/* verilator lint_off UNUSEDSIGNAL */
 function [2:0] generate_input_exceptions(input [15:0] a_val, input [15:0] b_val);
     logic [2:0] flags;
 
     // Check for NaN or infinity in inputs
     flags = 3'b0;
     
-    if ((a_val[15:10] == 5'b11111) || (b_val[15:10] == 5'b11111)) begin
+    if ((a_val[15:10] == 6'b11111) || (b_val[15:10] == 6'b11111)) begin
         flags[2] = 1'b1; // invalid operation
     end
     
@@ -226,9 +227,11 @@ endfunction
 // FP32 multiply with rounding
 function [31:0] fp32_multiply(input [31:0] a, input [31:0] b);
     logic sign_a, sign_b, sign_result;
-    logic [8:0] exp_a, exp_b, exp_result;
+    logic [7:0] exp_a, exp_b;
+    logic [8:0] exp_result;
     logic [22:0] mant_a, mant_b, mant_result;
     logic [31:0] result;
+    logic [47:0] mant_mult_full;
 
     // Extract components
     sign_a = a[31];
@@ -240,7 +243,7 @@ function [31:0] fp32_multiply(input [31:0] a, input [31:0] b);
     mant_b = b[22:0];
 
     // Handle special cases
-    if ((exp_a == 9'b111111111) || (exp_b == 9'b111111111)) begin
+    if ((exp_a == 8'hFF) || (exp_b == 8'hFF)) begin
         // One or both are infinity or NaN
         result = {sign_a ^ sign_b, 8'hFF, 23'h000000};
     end else if ((mant_a == 23'h0) || (mant_b == 23'h0)) begin
@@ -251,16 +254,18 @@ function [31:0] fp32_multiply(input [31:0] a, input [31:0] b);
         exp_result = exp_a + exp_b - 9'd127;
         
         // Multiply mantissas (with implicit 1)
-        mant_result = (mant_a + 23'h000001) * (mant_b + 23'h000001);
+        mant_mult_full = {1'b1, mant_a} * {1'b1, mant_b};
         
         // Normalize result
-        if (mant_result[46:23] != 24'h0) begin
+        if (mant_mult_full[47] != 1'b0) begin
             exp_result = exp_result + 1;
-            mant_result = mant_result >> 1;
+            mant_result = mant_mult_full[46:24];
+        end else begin
+            mant_result = mant_mult_full[45:23];
         end
         
         sign_result = sign_a ^ sign_b;
-        result = {sign_result, exp_result[8:0], mant_result[22:0]};
+        result = {sign_result, exp_result[7:0], mant_result[22:0]};
     end
 
     return result;
@@ -273,7 +278,7 @@ function [2:0] generate_multiply_exceptions(input [31:0] a, input [31:0] b);
     flags = 3'b0;
     
     // Check for overflow/underflow in multiplication
-    if ((a[30:23] == 9'b111111111) || (b[30:23] == 9'b111111111)) begin
+    if ((a[30:23] == 8'hFF) || (b[30:23] == 8'hFF)) begin
         flags[0] = 1'b1; // overflow
     end
     
@@ -283,9 +288,11 @@ endfunction
 // FP32 addition with rounding
 function [31:0] fp32_add(input [31:0] a, input [31:0] b);
     logic sign_a, sign_b, sign_result;
-    logic [8:0] exp_a, exp_b, exp_result;
+    logic [7:0] exp_a, exp_b;
+    logic [8:0] exp_result;
     logic [22:0] mant_a, mant_b, mant_result;
     logic [31:0] result;
+    logic [24:0] mant_add_full;
 
     // Extract components
     sign_a = a[31];
@@ -297,7 +304,7 @@ function [31:0] fp32_add(input [31:0] a, input [31:0] b);
     mant_b = b[22:0];
 
     // Handle special cases
-    if ((exp_a == 9'b111111111) || (exp_b == 9'b111111111)) begin
+    if ((exp_a == 8'hFF) || (exp_b == 8'hFF)) begin
         // One or both are infinity or NaN
         result = {sign_a ^ sign_b, 8'hFF, 23'h000000};
     end else if ((mant_a == 23'h0) || (mant_b == 23'h0)) begin
@@ -305,27 +312,30 @@ function [31:0] fp32_add(input [31:0] a, input [31:0] b);
         result = (mant_a == 23'h0) ? b : a;
     end else begin
         // Normal case - perform addition
-        exp_result = exp_a;
+        exp_result = {1'b0, exp_a};
         
         // Align mantissas and add
         if (exp_a < exp_b) begin
             mant_a = mant_a >> (exp_b - exp_a);
-            exp_result = exp_b;
+            exp_result = {1'b0, exp_b};
         end else if (exp_a > exp_b) begin
             mant_b = mant_b >> (exp_a - exp_b);
         end
         
         // Add mantissas with implicit 1
-        mant_result = (mant_a + 23'h000001) + (mant_b + 23'h000001);
+        mant_add_full = {1'b0, 1'b1, mant_a} + {1'b0, 1'b1, mant_b};
+        //mant_result = (mant_a + 23'h000001) + (mant_b + 23'h000001);
         
         // Normalize result
-        if (mant_result[24:23] != 2'b0) begin
+        if (mant_add_full[24] != 1'b0) begin
             exp_result = exp_result + 1;
-            mant_result = mant_result >> 1;
+            mant_result = mant_add_full[23:1];
+        end else begin
+            mant_result = mant_add_full[22:0];
         end
         
         sign_result = sign_a ^ sign_b;
-        result = {sign_result, exp_result[8:0], mant_result[22:0]};
+        result = {sign_result, exp_result[7:0], mant_result[22:0]};
     end
 
     return result;
@@ -338,7 +348,7 @@ function [2:0] generate_accumulate_exceptions(input [31:0] product, input [31:0]
     flags = 3'b0;
     
     // Check for overflow/underflow in addition
-    if ((product[30:23] == 9'b111111111) || (c[30:23] == 9'b111111111)) begin
+    if ((product[30:23] == 8'hFF) || (c[30:23] == 8'hFF)) begin
         flags[0] = 1'b1; // overflow
     end
     
@@ -364,12 +374,12 @@ function [2:0] generate_final_exceptions(input [31:0] accum);
     flags = 3'b0;
     
     // Check for overflow/underflow in final result
-    if (accum[30:23] == 9'b111111111) begin
+    if (accum[30:23] == 8'hFF) begin
         flags[0] = 1'b1; // overflow
     end
     
     return flags;
 endfunction
+/* verilator lint_on UNUSEDSIGNAL */
 
 endmodule
-```
