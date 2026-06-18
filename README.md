@@ -98,7 +98,9 @@ uv pip install crewai crewai-tools
 # TODO
 
 * **DONE (6/16)** Manually check the design with Verilator and see how accurate the AI models were.
-    * **(CHANGED 6/16)** ~~Lots of major design flaws, both implementation and architecturally.~~ Moving towards a single model.
+    * **(CHANGED 6/16)** ~~Lots of major design flaws, both implementation and architecturally.~~ **(DONE 6/17)** ~~Moving towards a single model.~~
+
+* Give the AI Agents the IEEE 754 Standard. A lot of the bugs seem to revolve around misunderstanding floating-point arithmetic.
 
 * Find and install an open-source Formal Verification tool to manually check the AI's generated SVA code.
 
@@ -118,6 +120,7 @@ uv pip install crewai crewai-tools
     * Verification agent incorrectly placed the bind method-call inside the module.
     * Verification agent made a huge architecture flaw in that the SVA model drives outputs, causing a situation where each model checks itself with no meaningful results.
     * After fixing all syntax and immediate architecture problems, assertion on Line 155 in the SVA file was triggered, implying reset doesn't behave correctly.
+
 2) Even swapping to Qwen3-coder:30b didn't yield much improvement. On the surface the Systemverilog code looks fine, but a deeper dive reveals it's still riddled with bugs everywhere.
 
 # Experiments
