@@ -118,6 +118,7 @@ uv pip install crewai crewai-tools
     * Verification agent incorrectly placed the bind method-call inside the module.
     * Verification agent made a huge architecture flaw in that the SVA model drives outputs, causing a situation where each model checks itself with no meaningful results.
     * After fixing all syntax and immediate architecture problems, assertion on Line 155 in the SVA file was triggered, implying reset doesn't behave correctly.
+2) Even swapping to Qwen3-coder:30b didn't yield much improvement. On the surface the Systemverilog code looks fine, but a deeper dive reveals it's still riddled with bugs everywhere.
 
 # Experiments
 * Swapped Qwen2.5-coder:14b for Qwen2.5-coder:32b. Already seeing promising results in that the code written is actually Systemverilog and not just Verilog with a .sv extension. However conversational responses are starting to appear in files. In the long run, this just a minor nuisance requiring vigilance.
