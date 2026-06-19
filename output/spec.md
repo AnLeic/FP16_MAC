@@ -2,212 +2,198 @@
 
 ## 1. Overview
 
-This document specifies the microarchitectural design of a high-performance FP16 Multiply-Accumulate (MAC) unit for AI accelerators. The unit computes D = (A * B) + C where A and B are IEEE 754 half-precision (FP16) inputs, C and D are IEEE 754 single-precision (FP32) values.
+This document specifies the microarchitectural and functional design of a high-performance FP16 Multiply-Accumulate (MAC) unit for AI accelerators. The unit computes D = (A * B) + C with mixed-precision inputs and outputs, implementing IEEE 754 compliance with specific handling for edge cases.
 
-## 2. Functional Specifications
+## 2. Functional Specification
 
 ### 2.1 Operation
-The MAC unit performs the following computation:
-```
-D = (A * B) + C
-```
-Where:
-- A, B: IEEE 754 FP16 inputs
-- C, D: IEEE 754 FP32 values
+The MAC unit performs the operation: **D = (A × B) + C**
+- **Inputs**: A, B (FP16), C (FP32)
+- **Output**: D (FP32)
+- **Precision**: Mixed-precision computation with FP16 inputs and FP32 output
 
 ### 2.2 Input/Output Interface
+```verilog
+input  logic clk;
+input  logic rst_n;
 
-#### 2.2.1 Input Interface
-| Signal | Width | Direction | Description |
-|--------|-------|-----------|-------------|
-| `a_valid` | 1 | Input | Valid signal for input A |
-| `a_ready` | 1 | Output | Ready signal for input A |
-| `a_data` | 16 | Input | FP16 value A |
-| `b_valid` | 1 | Input | Valid signal for input B |
-| `b_ready` | 1 | Output | Ready signal for input B |
-| `b_data` | 16 | Input | FP16 value B |
-| `c_valid` | 1 | Input | Valid signal for input C |
-| `c_ready` | 1 | Output | Ready signal for input C |
-| `c_data` | 32 | Input | FP32 value C |
+// Input valid/ready protocol
+input  logic [15:0] a_i;     // FP16 input A
+input  logic [15:0] b_i;     // FP16 input B  
+input  logic [31:0] c_i;     // FP32 input C
+input  logic valid_i;        // Input valid signal
+output logic ready_o;        // Input ready signal
 
-#### 2.2.2 Output Interface
-| Signal | Width | Direction | Description |
-|--------|-------|-----------|-------------|
-| `d_valid` | 1 | Output | Valid signal for output D |
-| `d_ready` | 1 | Input | Ready signal for output D |
-| `d_data` | 32 | Output | FP32 result D |
-| `exception` | 3 | Output | Exception flags [Overflow, Underflow, Invalid] |
+// Output valid/ready protocol
+output logic [31:0] d_o;     // FP32 output D
+output logic valid_o;        // Output valid signal
+input  logic ready_i;        // Output ready signal
 
-### 2.3 Protocol
-The MAC unit implements a standard Valid/Ready handshake protocol:
-- Inputs are accepted only when both `a_ready` and `b_ready` are asserted
-- The unit asserts `c_ready` when it is ready to accept input C
-- Output D is valid when `d_valid` is asserted
-- All signals are synchronous to the clock (posedge)
+// Exception flags
+output logic overflow_o;
+output logic underflow_o;
+output logic invalid_o;
+```
+
+### 2.3 Exception Handling
+- **Overflow**: When result exceeds FP32 maximum representable value
+- **Underflow**: When result is subnormal and FTZ is enabled
+- **Invalid Operation**: NaN inputs or operations producing NaN results
 
 ## 3. Pipeline Architecture
 
-### 3.1 Pipeline Stages
+### 3.1 Pipeline Stages (4-stage)
+```
+Stage 0: Input Processing & Conversion
+Stage 1: Multiplication
+Stage 2: Addition
+Stage 3: Rounding & Output Formatting
+```
 
-#### Stage 0: Input Latch and Preprocessing
-- **Inputs**: a_data, b_data, c_data
-- **Processing**:
-  - Validate FP16 inputs for NaN/Infinity
-  - Handle subnormal inputs with FTZ (Flush-to-Zero)
-  - Extract sign, exponent, and mantissa fields
-  - Normalize inputs to standard FP32 format
-- **Outputs**: Preprocessed operands in FP32 format
+### 3.2 Stage Details
 
-#### Stage 1: Multiply Operation
-- **Inputs**: Preprocessed A, B (FP32)
-- **Processing**:
-  - Perform FP32 multiplication
-  - Apply rounding-to-nearest-even for intermediate result
-  - Handle overflow/underflow detection during multiplication
-- **Outputs**: Intermediate product in FP32 format
+#### Stage 0: Input Processing & Conversion
+- **Function**: Convert FP16 inputs to internal extended precision
+- **Operations**:
+  - Parse FP16 inputs A and B
+  - Handle subnormal inputs with FTZ
+  - Convert to extended precision (48-bit mantissa + 16-bit exponent)
+  - Validate input formats
 
-#### Stage 2: Accumulate Operation
-- **Inputs**: Product (from stage 1), C (FP32)
-- **Processing**:
-  - Perform FP32 addition of product and C
-  - Apply rounding-to-nearest-even for final result
-  - Detect overflow/underflow conditions
-  - Check for invalid operations (NaN propagation)
-- **Outputs**: Final accumulated result
+#### Stage 1: Multiplication
+- **Function**: Perform FP16 × FP16 multiplication
+- **Operations**:
+  - Multiply significands (48-bit × 48-bit = 96-bit result)
+  - Add exponents with bias adjustment
+  - Handle special cases (zero, infinity, NaN)
+  - Normalize intermediate result
 
-#### Stage 3: Output Formatting and Exception Handling
-- **Inputs**: Accumulated result, exception flags from previous stages
-- **Processing**:
-  - Format final result according to IEEE 754 FP32
-  - Generate exception flags for overflow, underflow, invalid operations
-  - Apply FTZ for subnormal results if needed
-  - Final rounding and normalization
-- **Outputs**: Final D value, exception flags
+#### Stage 2: Addition
+- **Function**: Add FP32 accumulator C to multiplication result
+- **Operations**:
+  - Align exponents of multiplication result and C
+  - Perform addition/subtraction of significands
+  - Handle exponent overflow/underflow
+  - Maintain extended precision during computation
 
-### 3.2 Pipeline Depth
-The design implements a 4-stage pipeline to maximize clock frequency:
-- Stage 0: Input processing (1 cycle)
-- Stage 1: Multiply operation (1 cycle)  
-- Stage 2: Accumulate operation (1 cycle)
-- Stage 3: Output formatting (1 cycle)
+#### Stage 3: Rounding & Output Formatting
+- **Function**: Round to FP32 and format output
+- **Operations**:
+  - Apply Round-to-Nearest-Even (RNE) rounding
+  - Convert extended precision result to FP32 format
+  - Generate exception flags
+  - Format final IEEE 754 FP32 output
 
 ## 4. IEEE 754 Compliance
 
-### 4.1 Format Support
-- **Input A, B**: IEEE 754 half-precision (FP16)
-- **Input C, Output D**: IEEE 754 single-precision (FP32)
+### 4.1 Rounding Mode
+- **Round-to-Nearest-Even (RNE)** applied in:
+  - Normalization phase
+  - Truncation for FP32 conversion
+  - Intermediate precision handling
 
-### 4.2 Rounding Mode
-All intermediate and final computations use Round-to-Nearest-Even (RNE) mode:
-- During multiplication: RNE for intermediate product
-- During accumulation: RNE for final result
-- For truncation operations: RNE rounding
+### 4.2 Subnormal Handling
+- **Flush-to-Zero (FTZ) approach**:
+  - All subnormal inputs are treated as zero
+  - Subnormal outputs are flushed to zero
+  - Exception flag set when subnormal input detected
 
-### 4.3 Underflow Handling
-Subnormal inputs are handled via Flush-to-Zero (FTZ):
-- Subnormal FP16 inputs are converted to zero
-- Exception flag is set for underflow condition
-- All subnormal results are flushed to zero in final output
+### 4.3 Special Cases
+| Input Combination | Output Behavior |
+|-------------------|-----------------|
+| Any operand NaN   | Result = NaN, Invalid flag set |
+| Infinity × Zero   | Result = NaN, Invalid flag set |
+| Infinity × Infinity | Result = Infinity with sign |
+| Zero × Infinity   | Result = NaN, Invalid flag set |
 
-## 5. Exception Handling
+## 5. Exception Detection and Flagging
 
 ### 5.1 Exception Flags
-The MAC unit generates three exception flags:
-| Flag | Meaning |
-|------|---------|
-| `overflow` | Arithmetic overflow occurred |
-| `underflow` | Arithmetic underflow occurred |
-| `invalid` | Invalid operation detected (NaN propagation) |
+```verilog
+output logic overflow_o;    // Set when result overflows FP32 range
+output logic underflow_o;   // Set when result underflows FP32 range  
+output logic invalid_o;     // Set for invalid operations (NaN, inf×0, etc.)
+```
 
-### 5.2 Exception Detection
+### 5.2 Detection Logic
 
 #### Overflow Detection
-- **Multiply Stage**: Detect when product magnitude exceeds FP32 maximum
-- **Accumulate Stage**: Detect when sum magnitude exceeds FP32 maximum
-- **Flags**: Set `overflow` = 1 when overflow occurs
+- **Condition**: Result exponent > 127 (FP32 max exponent)
+- **Action**: Set overflow_o flag, output infinity with appropriate sign
 
 #### Underflow Detection  
-- **Input Stage**: Detect subnormal inputs and flag with FTZ
-- **Multiply Stage**: Detect when product magnitude is below FP32 minimum
-- **Accumulate Stage**: Detect when sum magnitude is below FP32 minimum
-- **Flags**: Set `underflow` = 1 when underflow occurs
+- **Condition**: Result exponent < -126 (FP32 min normal exponent)
+- **Action**: Set underflow_o flag, flush to zero if FTZ enabled
 
 #### Invalid Operation Detection
-- **NaN Propagation**: If either operand A or B is NaN, result is NaN
-- **Infinity Operations**: 
-  - ∞ × 0 = NaN
-  - ∞ + (-∞) = NaN  
-  - 0 × ∞ = NaN
-- **Flags**: Set `invalid` = 1 for all invalid operations
+- **NaN inputs**: Any operand is NaN → set invalid_o
+- **Indeterminate forms**: 0 × ∞, ∞ ÷ ∞, etc. → set invalid_o
+- **Invalid operations**: Division by zero (non-NaN) → set invalid_o
 
-## 6. Mathematical Edge Cases
+## 6. Timing and Performance
 
-### 6.1 Special Values Handling
+### 6.1 Clock Frequency
+- **Target**: Maximum frequency of 1 GHz
+- **Pipeline Depth**: 4 stages
+- **Latency**: 4 cycles from valid input to valid output
 
-#### Zero Operations
-- 0 × x = 0 (for any finite x)
-- 0 + x = x (for any finite x)
-- 0 × 0 = 0
+### 6.2 Throughput
+- **Issue Rate**: 1 MAC operation per cycle
+- **Completion Rate**: 1 result per cycle (after 4-cycle latency)
 
-#### Infinity Operations
-- ∞ × ∞ = ∞
-- ∞ + ∞ = ∞
-- ∞ × 0 = NaN
-- ∞ + (-∞) = NaN
+## 7. Mathematical Edge Cases
 
-#### NaN Operations
-- Any operation involving NaN results in NaN
-- NaN propagation through all pipeline stages
+### 7.1 Subnormal Input Handling
+```c
+if (input_is_subnormal) {
+    input_value = 0.0;  // FTZ: flush to zero
+    underflow_flag = 1;
+}
+```
 
-### 6.2 Subnormal Handling
-- Subnormal FP16 inputs are converted to zero at input stage
-- Subnormal intermediate results are flushed to zero
-- Exception flags are set for underflow conditions
+### 7.2 Overflow Scenarios
+- **Positive overflow**: Result > +3.4028235e+38
+- **Negative overflow**: Result < -3.4028235e+38  
+- **Output**: ±∞ with appropriate sign
 
-### 6.3 Precision Considerations
-- Intermediate computations maintain full FP32 precision
-- Final rounding applies RNE to ensure IEEE compliance
-- Pipeline stages maintain consistent precision throughout
+### 7.3 Underflow Scenarios
+- **Subnormal results**: Exponent < -126
+- **FTZ behavior**: Results flushed to zero
+- **Exception flag**: Set for subnormal input detection
 
-## 7. Performance Characteristics
+## 8. Implementation Constraints
 
-### 7.1 Throughput
-- **Latency**: 4 cycles (pipeline depth)
-- **Throughput**: 1 MAC operation per cycle (when pipeline is full)
-- **Cycle Time**: Optimized for maximum frequency operation
+### 8.1 Hardware Resources
+- **Logic gates**: Optimized for high-frequency operation
+- **Memory**: Minimal internal registers (4 pipeline stages)
+- **Multipliers**: 48×48 bit multiplier for intermediate computation
+- **Adders**: Extended precision adders for accumulation phase
 
-### 7.2 Resource Usage
-- **Area**: Minimal hardware footprint optimized for AI accelerators
-- **Power**: Low power consumption with efficient pipeline structure
-- **Clock Frequency**: Target > 1 GHz for high-performance AI applications
+### 8.2 Power Considerations
+- **Dynamic power**: Minimized through pipelining and clock gating
+- **Static power**: Optimized gate sizing for target frequency
+- **Clock gating**: Enabled at pipeline stage boundaries
 
-## 8. Implementation Notes
+### 8.3 Area Optimization
+- **Critical path**: Minimize propagation delay through key logic
+- **Register usage**: 4-stage pipeline with minimal register overhead
+- **Reusability**: Modular design supporting multiple MAC units in array
 
-### 8.1 Pipeline Optimization
-- All stages designed for maximum clock frequency
-- Critical path minimized through careful logic optimization
-- No structural hazards in pipeline execution
+## 9. Verification Plan
 
-### 8.2 Exception Handling
-- Exception flags are generated at each stage and propagated forward
-- Final exception output is synchronized with result data
-- Exception handling does not add pipeline latency
+### 9.1 Test Vectors
+- Standard arithmetic operations
+- Edge case inputs (zero, infinity, NaN)
+- Subnormal number handling
+- Overflow/underflow conditions
+- Rounding behavior verification
 
-### 8.3 Compatibility
-- Fully compliant with IEEE 754-2008 standards
-- Supports mixed-precision operations as required for AI accelerators
-- Compatible with existing AI accelerator architectures
+### 9.2 Coverage Metrics
+- **Functional coverage**: 100% IEEE 754 compliance
+- **Exception coverage**: All exception conditions tested
+- **Timing coverage**: Full pipeline operation verified
+- **Corner case coverage**: Subnormal, overflow, underflow scenarios
 
-## 9. Testability
+## 10. Summary
 
-### 9.1 Coverage
-- All special value combinations tested
-- Exception conditions verified
-- Edge case scenarios validated
-- Pipeline behavior confirmed across all stages
-
-### 9.2 Verification Approach
-- Formal verification of IEEE compliance
-- Monte Carlo testing with random inputs
-- Edge case validation with known test vectors
-- Performance benchmarking against target specifications
+This FP16 MAC unit specification defines a high-performance mixed-precision compute block optimized for AI accelerator applications. The design implements IEEE 754 compliance with FTZ handling, RNE rounding, and comprehensive exception detection while maintaining optimal pipeline depth for maximum frequency operation.

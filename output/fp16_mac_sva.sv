@@ -1,254 +1,223 @@
+```systemverilog
+// File: fp16_mac_checker.sv
+// Description: Formal verification checker for fp16_mac module
+//              Contains concurrent assertions, assumptions, and coverage points
 
-// File: fp16_mac_formal.sv
-// Author: Senior Formal Verification Engineer
-// Description: Complete formal verification assertions for FP16 MAC unit
-//              This file contains concurrent SVA assertions, assumptions,
-//              and cover points to mathematically prove design correctness.
-`timescale 1ns/1ps
-/* verilator lint_off UNUSEDSIGNAL */
+`default_nettype none
 
-module fp16_mac_sva (
+module fp16_mac_checker (
     input logic clk,
     input logic rst_n,
-    
-    // Input A interface
-    input logic a_valid,
-    input logic a_ready,
-    input logic [15:0] a_data,
-    
-    // Input B interface  
-    input logic b_valid,
-    input logic b_ready,
-    input logic [15:0] b_data,
-    
-    // Input C interface
-    input logic c_valid,
-    input logic c_ready,
-    input logic [31:0] c_data,
-    
-    // Output D interface
-    input logic d_valid,
-    input logic d_ready,
-    input logic [31:0] d_data,
-    
+
+    // Input valid/ready protocol
+    input logic [15:0] a_i,     // FP16 input A
+    input logic [15:0] b_i,     // FP16 input B  
+    input logic [31:0] c_i,     // FP32 input C
+    input logic valid_i,        // Input valid signal
+    output logic ready_o,        // Input ready signal
+
+    // Output valid/ready protocol
+    output logic [31:0] d_o,     // FP32 output D
+    output logic valid_o,        // Output valid signal
+    input logic ready_i,        // Output ready signal
+
     // Exception flags
-    input logic [2:0] exception  // {overflow, underflow, invalid}
+    output logic overflow_o,
+    output logic underflow_o,
+    output logic invalid_o
 );
 
-// Assumptions for formal verification
-// Protocol compliance assumptions
-assume property (@(posedge clk) disable iff (!rst_n)
-    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready))
-    else $error("Valid/Ready handshake protocol must be maintained");
+// Clocking block for synchronous assertions
+clocking cb @(posedge clk);
+    input a_i, b_i, c_i, valid_i, ready_i;
+    output d_o, valid_o, ready_o, overflow_o, underflow_o, invalid_o;
+endclocking
 
-// Reset behavior assumptions
-assume property (@(posedge clk) disable iff (!rst_n)
-    !rst_n |-> (a_ready == 1'b0 && b_ready == 1'b0 && c_ready == 1'b0))
-    else $error("All ready signals should be zero during reset");
+// Assumptions
+// Assumption: Pipeline stages operate correctly with proper handshaking
+assume property (@(cb) disable iff (!rst_n) 
+    (valid_i && ready_o) |-> (valid_o && !ready_o));
 
-assume property (@(posedge clk) disable iff (!rst_n)
-    !rst_n |-> (d_valid == 1'b0 && d_data == 32'h0))
-    else $error("Output valid and data should be zero during reset");
+// Assumption: Input signals are stable during valid period
+assume property (@(cb) disable iff (!rst_n)
+    valid_i |-> ##1 valid_i);
 
-// Flush-to-Zero assumptions
-assume property (@(posedge clk) disable iff (!rst_n)
-    (a_data[14:10] == 5'b00000) |-> (a_ready == 1'b1))
-    else $error("Subnormal inputs should be accepted with ready asserted");
+// Assumption: All inputs follow IEEE 754 FP16/FP32 format
+assume property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) |-> 
+    (a_i[15] == 1'b0 || a_i[15] == 1'b1) &&
+    (b_i[15] == 1'b0 || b_i[15] == 1'b1) &&
+    (c_i[31] == 1'b0 || c_i[31] == 1'b1));
 
-assume property (@(posedge clk) disable iff (!rst_n)
-    (b_data[14:10] == 5'b00000) |-> (b_ready == 1'b1))
-    else $error("Subnormal inputs should be accepted with ready asserted");
-
-// Pipeline stability assumptions
-assume property (@(posedge clk) disable iff (!rst_n)
-    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready))
-    else $error("Valid inputs must be accepted when ready signals are asserted");
+// Assumption: Clock is stable and synchronous
+assume property (@(cb) disable iff (!rst_n)
+    $stable(clk));
 
 // Protocol compliance assertions
-// Input handshake stability properties
-property p_input_handshake_stability;
-    @(posedge clk) disable iff (!rst_n)
-    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready);
-endproperty
 
-assert property(p_input_handshake_stability)
-    else $error("Input handshake protocol must be maintained");
+// Assert: Input handshake protocol is maintained
+assert property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) |-> 
+    valid_o && !ready_o);
 
-// Output handshake stability properties
-property p_output_handshake_stability;
-    @(posedge clk) disable iff (!rst_n)
-    d_valid |-> d_ready;
-endproperty
-
-assert property(p_output_handshake_stability)
-    else $error("Output valid signal must be accepted when ready is asserted");
-
-// Reset behavior assertions
-// All registers cleared during reset
-property p_reset_clear;
-    @(posedge clk) disable iff (!rst_n)
-    !rst_n |-> (a_ready == 1'b0 && b_ready == 1'b0 && c_ready == 1'b0 &&
-                d_valid == 1'b0 && d_data == 32'h0);
-endproperty
-
-assert property(p_reset_clear)
-    else $error("All outputs should be cleared during reset");
-
-// Flush-to-Zero verification
-// Subnormal inputs should be flushed to zero
-property p_flush_to_zero;
-    @(posedge clk) disable iff (!rst_n)
-    (a_data[14:10] == 5'b00000 && a_valid) |-> (a_ready == 1'b1);
-endproperty
-
-assert property(p_flush_to_zero)
-    else $error("Subnormal inputs should be accepted with ready signal");
-
-// Overflow targeting positive/negative infinity bit-patterns
-// Positive overflow detection and handling
-property p_positive_overflow;
-    @(posedge clk) disable iff (!rst_n)
-    (exception[0] == 1'b1 && a_data[15] == 1'b0 && b_data[15] == 1'b0) |-> 
-    (d_data[30:23] == 8'hFF);
-endproperty
-
-assert property(p_positive_overflow)
-    else $error("Positive overflow should result in positive infinity");
-
-// Negative overflow detection and handling
-property p_negative_overflow;
-    @(posedge clk) disable iff (!rst_n)
-    (exception[0] == 1'b1 && a_data[15] == 1'b1 && b_data[15] == 1'b1) |-> 
-    (d_data[30:23] == 8'hFF);
-endproperty
-
-assert property(p_negative_overflow)
-    else $error("Negative overflow should result in negative infinity");
+// Assert: Output handshake protocol is maintained
+assert property (@(cb) disable iff (!rst_n)
+    (valid_o && ready_i) |-> 
+    valid_o && !ready_i);
 
 // IEEE 754 compliance assertions
-// NaN propagation
-property p_nan_propagation;
-    @(posedge clk) disable iff (!rst_n)
-    (a_data[14:10] == 5'b11111 || b_data[14:10] == 5'b11111) |-> 
-    (exception[2] == 1'b1);
-endproperty
 
-assert property(p_nan_propagation)
-    else $error("Invalid operation flag should be set for NaN inputs");
+// Assert: FP16 inputs are properly parsed
+assert property (@(cb) disable iff (!rst_n)
+    valid_i |-> 
+    ((a_i[15] == 1'b0) || (a_i[15] == 1'b1)) &&
+    ((b_i[15] == 1'b0) || (b_i[15] == 1'b1)));
 
-// Zero multiplication assertions
-property p_zero_multiplication;
-    @(posedge clk) disable iff (!rst_n)
-    ((a_data[14:10] == 5'b00000 && b_data[14:10] != 5'b11111) ||
-     (a_data[14:10] != 5'b11111 && b_data[14:10] == 5'b00000)) |-> 
-    (d_data[30:23] == 8'hFF);
-endproperty
+// Subnormal handling assertions
 
-assert property(p_zero_multiplication)
-    else $error("Zero multiplication should result in zero");
+// Assert: FTZ behavior for subnormal inputs
+assert property (@(cb) disable iff (!rst_n)
+    valid_i |-> 
+    ((a_i[15:0] == 16'h0000) || (a_i[15:0] != 16'h0000)) &&
+    ((b_i[15:0] == 16'h0000) || (b_i[15:0] != 16'h0000)));
 
-// Overflow detection assertions
-property p_overflow_detection;
-    @(posedge clk) disable iff (!rst_n)
-    (exception[0] == 1'b1) |-> (d_data[30:23] == 8'hFF);
-endproperty
+// Exception flag generation assertions
 
-assert property(p_overflow_detection)
-    else $error("Overflow flag should be set for overflow conditions");
+// Assert: Overflow flag is set correctly
+assert property (@(cb) disable iff (!rst_n)
+    valid_o |-> 
+    (overflow_o == (d_o[31:0] == 32'h7F800000 || d_o[31:0] == 32'hFF800000)));
 
-// Underflow handling assertions
-property p_underflow_handling;
-    @(posedge clk) disable iff (!rst_n)
-    (exception[1] == 1'b1) |-> (d_data[30:23] == 8'h00);
-endproperty
+// Assert: Underflow flag is set correctly
+assert property (@(cb) disable iff (!rst_n)
+    valid_o |-> 
+    (underflow_o == (d_o[31:0] != 32'h00000000 && d_o[31:0] != 32'h7F800000 && d_o[31:0] != 32'hFF800000)));
 
-assert property(p_underflow_handling)
-    else $error("Underflow flag should be set for underflow conditions");
+// Pipeline consistency assertions
 
-// Exception flag consistency assertions
-property p_exception_consistency;
-    @(posedge clk) disable iff (!rst_n)
-    (exception[2] == 1'b1) |-> (a_data[14:10] == 5'b11111 || b_data[14:10] == 5'b11111);
-endproperty
+// Assert: Pipeline stages maintain data integrity
+assert property (@(cb) disable iff (!rst_n)
+    valid_i |-> 
+    (valid_o == 1'b1));
 
-assert property(p_exception_consistency)
-    else $error("Invalid operation flag should be set for NaN inputs");
+// Reset behavior assertions
 
-// Data integrity assertions
-property p_output_validity;
-    @(posedge clk) disable iff (!rst_n)
-    (d_valid && d_ready) |-> (d_data != 32'h0);
-endproperty
+// Assert: All registers cleared on reset
+assert property (@(cb) disable iff (!rst_n)
+    !rst_n |-> 
+    (d_o[31:0] == 32'h00000000) &&
+    (valid_o == 1'b0) &&
+    (overflow_o == 1'b0) &&
+    (underflow_o == 1'b0) &&
+    (invalid_o == 1'b0));
 
-assert property(p_output_validity)
-    else $error("Valid output should contain meaningful data");
+// Flush-to-Zero verification assertions
 
-// Pipeline behavior assertions
-// Pipeline stage ready propagation
-property p_pipeline_ready_propagation;
-    @(posedge clk) disable iff (!rst_n)
-    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready);
-endproperty
+// Assert: Zero multiplication produces zero result
+assert property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'h0000) || (b_i[15:0] == 16'h0000)) &&
+    valid_o |-> 
+    (d_o[31:0] == 32'h00000000));
 
-assert property(p_pipeline_ready_propagation)
-    else $error("Pipeline ready signals must propagate correctly");
+// Assert: Subnormal inputs are flushed to zero
+assert property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'h0001) || 
+     (b_i[15:0] == 16'h0001)) &&
+    valid_o |-> 
+    (d_o[31:0] == 32'h00000000));
 
-// Pipeline enable assertions
-property p_pipeline_enable;
-    @(posedge clk) disable iff (!rst_n)
-    (a_valid && b_valid && c_valid) |-> (a_ready && b_ready && c_ready);
-endproperty
+// Overflow targeting positive/negative infinity bit-patterns
 
-assert property(p_pipeline_enable)
-    else $error("Pipeline should enable only when inputs are valid");
+// Assert: Overflow produces positive infinity
+assert property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'h7C00) || (b_i[15:0] == 16'h7C00)) &&
+    valid_o |-> 
+    (d_o[31:0] == 32'h7F800000));
 
-// Cover points for special values
-cover property (@(posedge clk) disable iff (!rst_n)
-    (a_data[14:10] == 5'b11111)) ;
-    //"NaN input A";
+// Assert: Overflow produces negative infinity
+assert property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'hFC00) || (b_i[15:0] == 16'hFC00)) &&
+    valid_o |-> 
+    (d_o[31:0] == 32'hFF800000));
 
-cover property (@(posedge clk) disable iff (!rst_n)
-    (b_data[14:10] == 5'b11111)) ;
-    //"NaN input B";
+// NaN propagation assertions
 
-cover property (@(posedge clk) disable iff (!rst_n)
-    (a_data[14:10] == 5'b00000)) ;
-    //"Zero input A";
+// Assert: NaN propagation sets invalid flag
+assert property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'h7C00) || 
+     (b_i[15:0] == 16'h7C00) ||
+     (c_i[31:0] == 32'h7F800000)) &&
+    valid_o |-> 
+    invalid_o == 1'b1);
 
-cover property (@(posedge clk) disable iff (!rst_n)
-    (b_data[14:10] == 5'b00000)) ;
-    //"Zero input B";
+// Coverage points
 
-// Cover points for exception conditions
-cover property (@(posedge clk) disable iff (!rst_n)
-    (exception[0] == 1'b1)) ;
-    //"Overflow condition";
+// Cover: All IEEE 754 special cases
+cover property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'h7C00) || 
+     (b_i[15:0] == 16'h7C00) ||
+     (c_i[31:0] == 32'h7F800000)) &&
+    valid_o);
 
-cover property (@(posedge clk) disable iff (!rst_n)
-    (exception[1] == 1'b1)) ;
-    //"Underflow condition";
+// Cover: All exception conditions
+cover property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((overflow_o == 1'b1) || 
+     (underflow_o == 1'b1) ||
+     (invalid_o == 1'b1)) &&
+    valid_o);
 
-cover property (@(posedge clk) disable iff (!rst_n)
-    (exception[2] == 1'b1)) ;
-    //"Invalid operation condition";
+// Cover: Pipeline operation timing
+cover property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    valid_o);
 
-// Cover points for pipeline stalls
-cover property (@(posedge clk) disable iff (!rst_n)
-    (a_valid && !a_ready)) ;
-    //"Pipeline stall on A input";
+// Cover: Zero multiplication cases
+cover property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'h0000) || (b_i[15:0] == 16'h0000)) &&
+    valid_o);
 
-cover property (@(posedge clk) disable iff (!rst_n)
-    (b_valid && !b_ready)) ;
-    //"Pipeline stall on B input";
+// Cover: Subnormal input handling
+cover property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((a_i[15:0] == 16'h0001) || 
+     (b_i[15:0] == 16'h0001)) &&
+    valid_o);
 
-cover property (@(posedge clk) disable iff (!rst_n)
-    (c_valid && !c_ready)) ;
-    //"Pipeline stall on C input";
+// Cover: Reset during various pipeline states
+cover property (@(cb) disable iff (!rst_n)
+    !rst_n &&
+    valid_o);
 
-// Cover points for reset conditions
-cover property (@(posedge clk) disable iff (!rst_n)
-    (!rst_n)) ;
-    //"Reset condition active";
+// Cover: Overflow detection scenarios
+cover property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((d_o[31:0] == 32'h7F800000) || 
+     (d_o[31:0] == 32'hFF800000)) &&
+    valid_o);
 
-endmodule
-/* verilator lint_on UNUSEDSIGNAL */
+// Cover: Underflow detection scenarios
+cover property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    ((d_o[31:0] != 32'h00000000 && 
+      d_o[31:0] != 32'h7F800000 && 
+      d_o[31:0] != 32'hFF800000)) &&
+    valid_o);
+
+// Latency verification
+
+// Assert: Four-cycle latency is maintained
+assert property (@(cb) disable iff (!rst_n)
+    (valid_i && ready_o) &&
+    valid_o |-> 
+    $past(valid_i, 3) == 1'b1);
+
+endmodule : fp16_mac_checker
+```

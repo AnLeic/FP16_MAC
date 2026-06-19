@@ -1,71 +1,54 @@
+```systemverilog
 // File: tb_fp16_mac.sv
-// Author: Junior Verification Engineer
 // Description: Testbench for FP16 MAC unit verification
-//              Tests both functional correctness and compliance with specification
+//              Tests the RTL implementation against specification and verification plan
 
-`timescale 1ns/1ps
+`default_nettype none
 
-/*
-module testbench;
+module tb_fp16_mac;
 
     // Clock and reset signals
     logic clk;
     logic rst_n;
-    
+
     // Input signals
-    logic a_valid;
-    logic a_ready;
-    logic [15:0] a_data;
-    
-    logic b_valid;
-    logic b_ready;
-    logic [15:0] b_data;
-    
-    logic c_valid;
-    logic c_ready;
-    logic [31:0] c_data;
-    
+    logic [15:0] a_i;
+    logic [15:0] b_i;
+    logic [31:0] c_i;
+    logic valid_i;
+    logic ready_o;
+
     // Output signals
-    logic d_valid;
-    logic d_ready;
-    logic [31:0] d_data;
-    
+    logic [31:0] d_o;
+    logic valid_o;
+    logic ready_i;
+
     // Exception flags
-    logic [2:0] exception;
+    logic overflow_o;
+    logic underflow_o;
+    logic invalid_o;
 
     // Instantiate the DUT
     fp16_mac uut (
         .clk(clk),
         .rst_n(rst_n),
-        
-        // Input A interface
-        .a_valid(a_valid),
-        .a_ready(a_ready),
-        .a_data(a_data),
-        
-        // Input B interface  
-        .b_valid(b_valid),
-        .b_ready(b_ready),
-        .b_data(b_data),
-        
-        // Input C interface
-        .c_valid(c_valid),
-        .c_ready(c_ready),
-        .c_data(c_data),
-        
-        // Output D interface
-        .d_valid(d_valid),
-        .d_ready(d_ready),
-        .d_data(d_data),
-        
-        // Exception flags
-        .exception(exception)
+        .a_i(a_i),
+        .b_i(b_i),
+        .c_i(c_i),
+        .valid_i(valid_i),
+        .ready_o(ready_o),
+        .d_o(d_o),
+        .valid_o(valid_o),
+        .ready_i(ready_i),
+        .overflow_o(overflow_o),
+        .underflow_o(underflow_o),
+        .invalid_o(invalid_o)
     );
 
     // Clock generation
-    always #5 clk = ~clk;  // 10ns period clock
+    always #5 clk = ~clk;  // 10ns period clock (100MHz)
 
-    // Reset generation
+    // Reset sequence
     initial begin
         clk = 0;
         rst_n = 0;
@@ -73,218 +56,352 @@ module testbench;
         // Apply reset for 20ns
         #20 rst_n = 1;
         
-        // Wait for some cycles to ensure reset is stable
+        // Wait for a few cycles to ensure stable state
         #50;
+        
+        $display("Testbench initialized at time %t", $time);
     end
 
-    // Test sequence generator
-    task automatic send_inputs(input [15:0] a_val, input [15:0] b_val, input [31:0] c_val);
-        a_data = a_val;
-        b_data = b_val;
-        c_data = c_val;
-        
-        a_valid = 1'b1;
-        b_valid = 1'b1;
-        c_valid = 1'b1;
-        
-        // Wait for ready signals
-        @(posedge clk);
-        while (!(a_ready && b_ready && c_ready)) begin
-            @(posedge clk);
-        end
-        
-        // Deassert valid signals after handshake
-        a_valid = 1'b0;
-        b_valid = 1'b0;
-        c_valid = 1'b0;
-    endtask
-
-    // Test sequence for normal operation
-    task automatic test_normal_operation();
-        $display("Starting normal operation test...");
-        
-        // Test case 1: Simple multiplication and accumulation
-        send_inputs(16'h3C00, 16'h3C00, 32'h40000000);  // 1.0 * 1.0 + 2.0 = 3.0
-        
-        // Wait for result
-        @(posedge clk);
-        while (!d_valid) begin
-            @(posedge clk);
-        end
-        
-        // Accept the result
-        d_ready = 1'b1;
-        @(posedge clk);
-        d_ready = 1'b0;
-        
-        $display("Result: %h, Exception: %b", d_data, exception);
-        
-        // Test case 2: Zero multiplication
-        send_inputs(16'h0000, 16'h3C00, 32'h40000000);  // 0.0 * 1.0 + 2.0 = 2.0
-        
-        // Wait for result
-        @(posedge clk);
-        while (!d_valid) begin
-            @(posedge clk);
-        end
-        
-        // Accept the result
-        d_ready = 1'b1;
-        @(posedge clk);
-        d_ready = 1'b0;
-        
-        $display("Result: %h, Exception: %b", d_data, exception);
-    endtask
-
-    // Test sequence for special values
-    task automatic test_special_values();
-        $display("Starting special values test...");
-        
-        // Test case 1: NaN propagation
-        send_inputs(16'h7C00, 16'h3C00, 32'h40000000);  // NaN * 1.0 + 2.0 = NaN
-        
-        // Wait for result
-        @(posedge clk);
-        while (!d_valid) begin
-            @(posedge clk);
-        end
-        
-        // Accept the result
-        d_ready = 1'b1;
-        @(posedge clk);
-        d_ready = 1'b0;
-        
-        $display("NaN test - Result: %h, Exception: %b", d_data, exception);
-        
-        // Test case 2: Infinity operations
-        send_inputs(16'h7C00, 16'h7C00, 32'h40000000);  // ∞ * ∞ + 2.0 = ∞
-        
-        // Wait for result
-        @(posedge clk);
-        while (!d_valid) begin
-            @(posedge clk);
-        end
-        
-        // Accept the result
-        d_ready = 1'b1;
-        @(posedge clk);
-        d_ready = 1'b0;
-        
-        $display("Infinity test - Result: %h, Exception: %b", d_data, exception);
-    endtask
-
-    // Test sequence for pipeline behavior
-    task automatic test_pipeline_behavior();
-        $display("Starting pipeline behavior test...");
-        
-        // Send multiple inputs in sequence to test pipeline full operation
-        for (bit [15:0] i = 0; i < 5; i++) begin
-            send_inputs(16'h3C00 + i, 16'h3C00 + i, 32'h40000000 + 32'(i));
-            
-            // Wait for result
-            @(posedge clk);
-            while (!d_valid) begin
-                @(posedge clk);
-            end
-            
-            // Accept the result
-            d_ready = 1'b1;
-            @(posedge clk);
-            d_ready = 1'b0;
-        end
-    endtask
-endmodule
-*/
-
-/* verilator lint_off UNUSEDSIGNAL */
-module testbench;
-    logic clk;
-    logic rst_n;
-    logic a_valid, b_valid, c_valid, d_ready;
-    logic a_ready, b_ready, c_ready, d_valid;
-    logic [15:0] a_data, b_data;
-    logic [31:0] c_data, d_data;
-    logic [2:0] exception;
-    logic [15:0] inputs_a [3];
-    logic [15:0] inputs_b [3];
-    logic [31:0] inputs_c [3];
-
-    // Instantiate DUT
-    //fp16_mac uut (.*);
-    fp16_mac uut (
-        .clk(clk),
-        .rst_n(rst_n),
-        
-        // Input A interface
-        .a_valid(a_valid),
-        .a_ready(a_ready),
-        .a_data(a_data),
-        
-        // Input B interface  
-        .b_valid(b_valid),
-        .b_ready(b_ready),
-        .b_data(b_data),
-        
-        // Input C interface
-        .c_valid(c_valid),
-        .c_ready(c_ready),
-        .c_data(c_data),
-        
-        // Output D interface
-        .d_valid(d_valid),
-        .d_ready(d_ready),
-        .d_data(d_data),
-        
-        // Exception flags
-        .exception(exception)
-    );
-
-    // Clock generation
-    always #5 clk = ~clk;
-
-    // Automated Smoke Test Suite
+    // Test sequence
     initial begin
-        // 1. Reset sequence
-        clk = 0;
-        rst_n = 0;
-        a_valid = 0; b_valid = 0; c_valid = 0; d_ready = 0;
-        #20 rst_n = 1;
-        repeat(2) @(posedge clk);
+        // Initialize signals
+        a_i = 16'h0000;
+        b_i = 16'h0000;
+        c_i = 32'h00000000;
+        valid_i = 1'b0;
+        ready_i = 1'b1;
 
-        $display("--- Starting Smoke Test Suite ---");
+        // Wait for reset to be released
+        #50;
 
-        // 2. Focused Test Cases: {A, B, C, Expected_Result}
-        inputs_a = '{16'h3C00, 16'h0000, 16'h7C00};
-        inputs_b = '{16'h3C00, 16'h3C00, 16'h7C00};
-        inputs_c = '{32'h40000000, 32'h40000000, 32'h40000000};
+        $display("Starting test sequence at time %t", $time);
+
+        // Test 1: Basic operation - 1.0 * 2.0 + 3.0 = 5.0
+        test_basic_operation();
         
-        foreach (inputs_a[i]) begin
-            run_transaction(inputs_a[i], inputs_b[i], inputs_c[i]);
-        end
-
-        $display("--- Smoke Test Passed Successfully ---");
+        // Test 2: Zero multiplication
+        test_zero_multiplication();
+        
+        // Test 3: Subnormal inputs with FTZ
+        test_subnormal_inputs();
+        
+        // Test 4: NaN propagation
+        test_nan_propagation();
+        
+        // Test 5: Infinity operations
+        test_infinity_operations();
+        
+        // Test 6: Overflow detection
+        test_overflow_detection();
+        
+        // Test 7: Underflow detection
+        test_underflow_detection();
+        
+        // Test 8: Pipeline stall and resume
+        test_pipeline_stall();
+        
+        // Test 9: Back-to-back operations
+        test_back_to_back_operations();
+        
+        $display("All tests completed at time %t", $time);
         $finish;
     end
 
-    // Helper: Single automated transaction
-    task automatic run_transaction(input [15:0] a, b, input [31:0] c);
-        // Drive inputs
-        @(posedge clk);
-        a_data = a; b_data = b; c_data = c;
-        a_valid = 1; b_valid = 1; c_valid = 1;
+    // Test 1: Basic operation - 1.0 * 2.0 + 3.0 = 5.0
+    task test_basic_operation();
+        $display("Test 1: Basic operation - 1.0 * 2.0 + 3.0 = 5.0");
         
-        // Handshake: Wait for ready
-        wait(a_ready && b_ready && c_ready);
+        // Set inputs for 1.0 * 2.0 + 3.0
+        a_i = 16'h3C00;  // 1.0 in FP16 (sign=0, exp=15, mant=0)
+        b_i = 16'h4000;  // 2.0 in FP16 (sign=0, exp=15, mant=0) 
+        c_i = 32'h40A00000;  // 5.0 in FP32 (sign=0, exp=128, mant=512)
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
         @(posedge clk);
-        a_valid = 0; b_valid = 0; c_valid = 0;
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check result
+        if (d_o == 32'h40A00000) begin
+            $display("PASS: Basic operation result = 5.0");
+        end else begin
+            $display("FAIL: Basic operation result = %h, expected = 40A00000", d_o);
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
 
-        // Collect: Wait for valid and assert ready
-        d_ready = 1;
-        wait(d_valid);
-        @(posedge clk);
-        d_ready = 0;
+    // Test 2: Zero multiplication
+    task test_zero_multiplication();
+        $display("Test 2: Zero multiplication");
         
-        $display("Input: %h, %h, %h | Output: %h", a, b, c, d_data);
-    endtask
-endmodule
-/* verilator lint_on UNUSEDSIGNAL */
+        // Set one operand to zero
+        a_i = 16'h0000;  // 0.0 in FP16
+        b_i = 16'h4000;  // 2.0 in FP16
+        c_i = 32'h40000000;  // 2.0 in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check result (0 * 2.0 + 2.0 = 2.0)
+        if (d_o == 32'h40000000) begin
+            $display("PASS: Zero multiplication result = 2.0");
+        end else begin
+            $display("FAIL: Zero multiplication result = %h, expected = 40000000", d_o);
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+    // Test 3: Subnormal inputs with FTZ
+    task test_subnormal_inputs();
+        $display("Test 3: Subnormal inputs with FTZ");
+        
+        // Set subnormal inputs (should be flushed to zero)
+        a_i = 16'h0001;  // Subnormal FP16 value
+        b_i = 16'h4000;  // 2.0 in FP16
+        c_i = 32'h40000000;  // 2.0 in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check result (0 * 2.0 + 2.0 = 2.0)
+        if (d_o == 32'h40000000) begin
+            $display("PASS: Subnormal input handling result = 2.0");
+        end else begin
+            $display("FAIL: Subnormal input handling result = %h, expected = 40000000", d_o);
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+    // Test 4: NaN propagation
+    task test_nan_propagation();
+        $display("Test 4: NaN propagation");
+        
+        // Set one operand to NaN
+        a_i = 16'h7C00;  // NaN in FP16
+        b_i = 16'h4000;  // 2.0 in FP16
+        c_i = 32'h40000000;  // 2.0 in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check that invalid flag is set
+        if (invalid_o == 1'b1) begin
+            $display("PASS: NaN propagation sets invalid flag");
+        end else begin
+            $display("FAIL: NaN propagation did not set invalid flag");
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+    // Test 5: Infinity operations
+    task test_infinity_operations();
+        $display("Test 5: Infinity operations");
+        
+        // Set one operand to infinity
+        a_i = 16'h7C00;  // Infinity in FP16
+        b_i = 16'h4000;  // 2.0 in FP16
+        c_i = 32'h40000000;  // 2.0 in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check result (infinity * 2.0 + 2.0 = infinity)
+        if ((d_o[31] == 1'b1 && d_o[30:23] == 8'hFF) || 
+            (d_o[31] == 1'b0 && d_o[30:23] == 8'hFF)) begin
+            $display("PASS: Infinity operation result = infinity");
+        end else begin
+            $display("FAIL: Infinity operation result = %h", d_o);
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+    // Test 6: Overflow detection
+    task test_overflow_detection();
+        $display("Test 6: Overflow detection");
+        
+        // Set inputs that will cause overflow
+        a_i = 16'h7BFF;  // Large positive FP16 value (close to max)
+        b_i = 16'h7BFF;  // Large positive FP16 value (close to max)
+        c_i = 32'h7F800000;  // Infinity in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check that overflow flag is set
+        if (overflow_o == 1'b1) begin
+            $display("PASS: Overflow detection works correctly");
+        end else begin
+            $display("FAIL: Overflow detection did not set overflow flag");
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+    // Test 7: Underflow detection
+    task test_underflow_detection();
+        $display("Test 7: Underflow detection");
+        
+        // Set inputs that will cause underflow
+        a_i = 16'h0001;  // Subnormal FP16 value
+        b_i = 16'h0001;  // Subnormal FP16 value  
+        c_i = 32'h00000000;  // Zero in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check that underflow flag is set (due to FTZ)
+        if (underflow_o == 1'b1) begin
+            $display("PASS: Underflow detection works correctly");
+        end else begin
+            $display("FAIL: Underflow detection did not set underflow flag");
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+    // Test 8: Pipeline stall and resume
+    task test_pipeline_stall();
+        $display("Test 8: Pipeline stall and resume");
+        
+        // Send data with ready_i = 0 (stall pipeline)
+        ready_i = 1'b0;
+        
+        a_i = 16'h3C00;  // 1.0 in FP16
+        b_i = 16'h4000;  // 2.0 in FP16
+        c_i = 32'h40000000;  // 2.0 in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted (should not happen due to stall)
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Resume pipeline
+        ready_i = 1'b1;
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        // Check result (1.0 * 2.0 + 2.0 = 4.0)
+        if (d_o == 32'h40800000) begin
+            $display("PASS: Pipeline stall/resume works correctly");
+        end else begin
+            $display("FAIL: Pipeline stall/resume result = %h, expected = 40800000", d_o);
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+    // Test 9: Back-to-back operations
+    task test_back_to_back_operations();
+        $display("Test 9: Back-to-back operations");
+        
+        // First operation: 1.0 * 2.0 + 3.0 = 5.0
+        a_i = 16'h3C00;  // 1.0 in FP16
+        b_i = 16'h4000;  // 2.0 in FP16
+        c_i = 32'h40A00000;  // 5.0 in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        if (d_o == 32'h40A00000) begin
+            $display("PASS: First operation result = 5.0");
+        end else begin
+            $display("FAIL: First operation result = %h, expected = 40A00000", d_o);
+        end
+        
+        // Second operation: 2.0 * 3.0 + 1.0 = 7.0
+        a_i = 16'h4000;  // 2.0 in FP16
+        b_i = 16'h4400;  // 3.0 in FP16
+        c_i = 32'h40800000;  // 4.0 in FP32
+        
+        valid_i = 1'b1;
+        
+        // Wait for input to be accepted
+        @(posedge clk);
+        while (!ready_o) @(posedge clk);
+        
+        // Wait for output to be valid
+        @(posedge clk);
+        while (!valid_o) @(posedge clk);
+        
+        if (d_o == 32'h41C00000) begin
+            $display("PASS: Second operation result = 7.0");
+        end else begin
+            $display("FAIL: Second operation result = %h, expected = 41C00000", d_o);
+        end
+        
+        valid_i = 1'b0;
+        @(posedge clk);
+    end
+
+endmodule : tb_fp16_mac
+```

@@ -1,13 +1,13 @@
 import os
 from crewai import Crew, LLM, Process, Agent, Task
 
-os.environ["OPENAI_MODEL_NAME"] = "ollama/qwen3-coder:30b-16k" # Ensure we don't use GPT to enforce data security
+os.environ["OPENAI_MODEL_NAME"] = "ollama/qwen3-coder:30b-32k" # Ensure we don't use GPT to enforce data security
 os.environ["OPENAI_API_KEY"] = "ollama"
 os.environ["OPENAI_BASE_URL"] = "http://localhost:11434"
 os.environ["OPENAI_API_BASE"] = "http://localhost:11434"
 
 #manager_psyche = "ollama/deepseek-r1:32b-16k" # Used for complex reasoning and planning
-engineer_psyche = "ollama/qwen3-coder:30b-16k" # Very promising. Going to stick with this and see where it takes the project
+engineer_psyche = "ollama/qwen3-coder:30b-32k" # Very promising. Going to stick with this and see where it takes the project
 
 #llm_architect = LLM(model=manager_psyche, base_url="http://localhost:11434", temperature=0.4)
 llm_architect = LLM(model=engineer_psyche, base_url="http://localhost:11434", temperature=0.4)
@@ -104,9 +104,12 @@ specification_task = Task(
 rtl_firstpass_task = Task(
     description=(
         "Read the specification document about an FP16 MAC module in output/spec.md. "
-        "You will be dealing with floating-point arithmetic, which involves handling mantissas, exponents and other tricky calculation. "
-        "You will need to figure out how to handle two FP16 inputs, an FP32 input and output. "
-        "Write a Systemverilog module that keeps in mind these challenges. "
+        "CRITICAL IMPLEMENTATION RULES:\n"
+        "1. DO NOT use raw arithmetic operators ('*', '+') directly on the floating-point vectors.\n"
+        "2. You MUST explicitly unpack the FP16/FP32 fields (sign, exponent, mantissa) into separate local logic signals.\n"
+        "3. Implement explicit logic for: Mantissa multiplication (handling the implicit bit), exponent addition/subtraction with bias, and an alignment barrel-shifter for the C operand.\n"
+        "4. Synchronize the input handshakes: a_ready, b_ready, and c_ready must assert simultaneously only when all three valids are high and the input stage is free.\n"
+        "5. Properly pass data through the pipeline arrays sequentially (e.g., stage[i] <= stage[i-1])."
     ),
     agent=rtl_engie,
     expected_output="A synthesizable Systemverilog file (.sv) with comments explaining design choices and their reasoning.",
@@ -116,8 +119,10 @@ rtl_firstpass_task = Task(
 rtl_secondpass_task = Task(
     description=(
         "Begin by inspecting the file output/fp16_mac.sv. "
-        "Work through the complex floating point arithmetic and determine if they are mathematically correct. "
-        "If they are incorrect, modify or rewrite relevant RTL code. If they are correct, then complete the rest of the module as needed."
+        "Act as a strict Silicon Sign-off Reviewer. Look for the following critical bugs:\n"
+        "- Any instance where an output or internal signal is multi-driven by both an always_comb and always_ff block.\n"
+        "- Any instance where floating-point inputs are directly multiplied or added like integers.\n"
+        "If these bugs exist, rewrite the mathematical datapaths to perform true IEEE 754 steps: unpacking, subnormal flushing (FTZ), mantissa multiplication, exponent alignment, addition, Round-to-Nearest-Even (RNE) rounding, and repacking."
     ),
     agent=rtl_engie,
     expected_output="Pragmatic, cleanly structured, and commented SystemVerilog (.sv) code for the module.",
@@ -132,7 +137,8 @@ plan_verification_task = Task(
     ),
     expected_output="A structured formal verification plan in Markdown mapping required assertions, assumptions, and cover points.",
     agent=lead_verification,
-    output_file="output/verification_plan.md"
+    output_file="output/verification_plan.md",
+    context=[specification_task, rtl_secondpass_task]
 )
 
 verification_task = Task(
@@ -147,7 +153,8 @@ verification_task = Task(
     ),
     expected_output="A valid SystemVerilog file (.sv) containing concurrent SVAs, assumptions, and cover points wrapped in a checker or bind module.",
     agent=verif_engie,
-    output_file="output/fp16_mac_sva.sv"
+    output_file="output/fp16_mac_sva.sv",
+    context=[rtl_secondpass_task, plan_verification_task]
 )
 
 write_testbench_task = Task(
@@ -157,7 +164,8 @@ write_testbench_task = Task(
     ),
     expected_output="A Systemverilog (.sv) file that compiles correctly and tests the RTL file against both the verification plan and specification document.",
     agent=testing_agent,
-    output_file="output/testbench.sv"
+    output_file="output/testbench.sv",
+    context=[specification_task, rtl_secondpass_task, plan_verification_task, verification_task]
 )
 
 

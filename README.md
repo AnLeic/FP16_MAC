@@ -63,7 +63,7 @@ D = (A x B) + C
 
 * Ollama backend engine
 
-* Minimum recommended hardware: GPU with 16GB+ VRAM to handle model swapping. (AMD RX 7000 or NVIDIA RTX 40-series or better).
+* **NOTE**: At bare minimum, if you do not possess 24GB of VRAM, this project will have significantly different results.
 
 ## Handling Context
 
@@ -128,3 +128,12 @@ uv pip install crewai crewai-tools
 
     * Using Qwen3-coder:30b instead seems much more promising. Actual Systemverilog, blocking statements aren't used within always_ff blocks on first-go. The junior engineer forgot to close off the testbench module and a couple tasks. (Is it emulating a junior employee too well?) A deeper dive behind the model reveals it utilizes an MoE architecture, resulting in much faster inference at less VRAM cost.
 
+* Expanding the context window within the script itself and see how much lack of context is affecting generation and thinking. Going to use 32k instead of 16k.
+
+    * Didn't seem to change much.
+
+* Making another "team" that's all about nailing down the floating-point arithmetic. Perhaps the core issue is doing things too monolithic-like.
+
+    * Experimented with Autogen, a library from Microsoft. Doesn't seem to need so much customization and bypassing as CrewAI which is promising. However it's becoming clear that, even when provided the IEEE-754 standard, the AI agents are completely incapable of creating functional floating-point arithmetic code. This might be an area where a human mind is still required.
+
+* Experimented with expanding context window to 32k. Not seeing much difference if I'm being honest.
