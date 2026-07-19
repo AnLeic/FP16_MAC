@@ -1,223 +1,168 @@
-```systemverilog
-// File: fp16_mac_checker.sv
-// Description: Formal verification checker for fp16_mac module
-//              Contains concurrent assertions, assumptions, and coverage points
+// File: fp16_mac_sva.sv
+// Description: Formal verification checker for the fp16_mac module.
+// Bound module (see tb.sv) checking protocol, reset, latency, and IEEE 754
+// special-value flag correctness for D = (A * B) + C.
+//
+// Historical values (rst_n, valid_i&&ready_o, c_i, the accept-condition
+// flags) are captured with explicit shift registers rather than the SVA
+// $past() system function, whose interaction with an event-driven timing
+// scheduler can stall simulation in some tools; plain always_ff shadow
+// registers are simple, portable RTL and sidestep that entirely.
 
 `default_nettype none
 
-module fp16_mac_checker (
+module fp16_mac_sva (
     input logic clk,
     input logic rst_n,
 
-    // Input valid/ready protocol
-    input logic [15:0] a_i,     // FP16 input A
-    input logic [15:0] b_i,     // FP16 input B  
-    input logic [31:0] c_i,     // FP32 input C
-    input logic valid_i,        // Input valid signal
-    output logic ready_o,        // Input ready signal
+    input logic [15:0] a_i,
+    input logic [15:0] b_i,
+    input logic [31:0] c_i,
+    input logic valid_i,
+    input logic ready_o,
 
-    // Output valid/ready protocol
-    output logic [31:0] d_o,     // FP32 output D
-    output logic valid_o,        // Output valid signal
-    input logic ready_i,        // Output ready signal
+    input logic [31:0] d_o,
+    input logic valid_o,
+    input logic ready_i,
 
-    // Exception flags
-    output logic overflow_o,
-    output logic underflow_o,
-    output logic invalid_o
+    input logic overflow_o,
+    input logic underflow_o,
+    input logic invalid_o
 );
 
-// Clocking block for synchronous assertions
-clocking cb @(posedge clk);
-    input a_i, b_i, c_i, valid_i, ready_i;
-    output d_o, valid_o, ready_o, overflow_o, underflow_o, invalid_o;
-endclocking
+    localparam int PIPE_LATENCY = 4;
 
-// Assumptions
-// Assumption: Pipeline stages operate correctly with proper handshaking
-assume property (@(cb) disable iff (!rst_n) 
-    (valid_i && ready_o) |-> (valid_o && !ready_o));
+    clocking cb @(posedge clk);
+        input a_i, b_i, c_i, valid_i, ready_i, ready_o, d_o, valid_o,
+              overflow_o, underflow_o, invalid_o;
+    endclocking
 
-// Assumption: Input signals are stable during valid period
-assume property (@(cb) disable iff (!rst_n)
-    valid_i |-> ##1 valid_i);
+    // General FP16/FP32 special-value classifiers (not hardcoded operand
+    // values -- any exponent-all-ones pattern is Inf/NaN, any subnormal
+    // pattern is exponent-zero-mantissa-nonzero).
+    function automatic bit is_fp16_nan(logic [15:0] v);
+        return (v[14:10] == 5'b11111) && (v[9:0] != 10'b0);
+    endfunction
+    function automatic bit is_fp16_inf(logic [15:0] v);
+        return (v[14:10] == 5'b11111) && (v[9:0] == 10'b0);
+    endfunction
+    function automatic bit is_fp16_subnormal(logic [15:0] v);
+        return (v[14:10] == 5'b0) && (v[9:0] != 10'b0);
+    endfunction
+    function automatic bit is_fp32_nan(logic [31:0] v);
+        return (v[30:23] == 8'hFF) && (v[22:0] != 23'b0);
+    endfunction
+    function automatic bit is_fp32_inf(logic [31:0] v);
+        return (v[30:23] == 8'hFF) && (v[22:0] == 23'b0);
+    endfunction
 
-// Assumption: All inputs follow IEEE 754 FP16/FP32 format
-assume property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) |-> 
-    (a_i[15] == 1'b0 || a_i[15] == 1'b1) &&
-    (b_i[15] == 1'b0 || b_i[15] == 1'b1) &&
-    (c_i[31] == 1'b0 || c_i[31] == 1'b1));
+    //--------------------------------------------------------------
+    // Shadow history shift registers (depth PIPE_LATENCY), captured every
+    // clock so assertions can reference "N cycles ago" without $past().
+    //--------------------------------------------------------------
+    logic prev_rst_n;
+    logic accept_hist   [PIPE_LATENCY:0];
+    logic [31:0] c_hist [PIPE_LATENCY:0];
+    logic ftz_cond_hist [PIPE_LATENCY:0];
+    logic nan_cond_hist [PIPE_LATENCY:0];
 
-// Assumption: Clock is stable and synchronous
-assume property (@(cb) disable iff (!rst_n)
-    $stable(clk));
+    wire accept_now = valid_i && ready_o;
+    wire ftz_cond_now = accept_now &&
+        ((a_i == 16'h0000) || (b_i == 16'h0000) ||
+         is_fp16_subnormal(a_i) || is_fp16_subnormal(b_i)) &&
+        !is_fp16_nan(a_i) && !is_fp16_nan(b_i) && !is_fp32_nan(c_i) &&
+        !is_fp16_inf(a_i) && !is_fp16_inf(b_i) && !is_fp32_inf(c_i);
+    wire nan_cond_now = accept_now &&
+        (is_fp16_nan(a_i) || is_fp16_nan(b_i) || is_fp32_nan(c_i));
 
-// Protocol compliance assertions
+    always_ff @(posedge clk) begin
+        prev_rst_n <= rst_n;
+        accept_hist[0]   <= accept_now;
+        c_hist[0]        <= c_i;
+        ftz_cond_hist[0] <= ftz_cond_now;
+        nan_cond_hist[0] <= nan_cond_now;
+        for (int k = 1; k <= PIPE_LATENCY; k++) begin
+            accept_hist[k]   <= accept_hist[k-1];
+            c_hist[k]        <= c_hist[k-1];
+            ftz_cond_hist[k] <= ftz_cond_hist[k-1];
+            nan_cond_hist[k] <= nan_cond_hist[k-1];
+        end
+    end
 
-// Assert: Input handshake protocol is maintained
-assert property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) |-> 
-    valid_o && !ready_o);
+    //--------------------------------------------------------------
+    // Reset behavior: registers are guaranteed clear the cycle after
+    // rst_n deasserts (async-reset always_ff blocks).
+    //--------------------------------------------------------------
+    assert property (@(cb)
+        (!prev_rst_n && !rst_n) |->
+        (d_o == 32'h0 && valid_o == 1'b0 &&
+         overflow_o == 1'b0 && underflow_o == 1'b0 && invalid_o == 1'b0));
 
-// Assert: Output handshake protocol is maintained
-assert property (@(cb) disable iff (!rst_n)
-    (valid_o && ready_i) |-> 
-    valid_o && !ready_i);
+    //--------------------------------------------------------------
+    // Protocol / handshake sanity: valid_o must not change while a
+    // downstream consumer is not ready (data held stable until accepted).
+    //--------------------------------------------------------------
+    assert property (@(cb) disable iff (!rst_n)
+        (valid_o && !ready_i) |=> valid_o);
 
-// IEEE 754 compliance assertions
+    //--------------------------------------------------------------
+    // Latency: exactly PIPE_LATENCY cycles from acceptance to output valid.
+    // Holds whenever the consumer keeps ready_i high (the common case and
+    // what this testbench drives); under backpressure valid_o may be held
+    // an extra cycle, which is legal handshake behavior but not checked here.
+    //--------------------------------------------------------------
+    assert property (@(cb) disable iff (!rst_n)
+        accept_hist[PIPE_LATENCY-1] |-> valid_o);
 
-// Assert: FP16 inputs are properly parsed
-assert property (@(cb) disable iff (!rst_n)
-    valid_i |-> 
-    ((a_i[15] == 1'b0) || (a_i[15] == 1'b1)) &&
-    ((b_i[15] == 1'b0) || (b_i[15] == 1'b1)));
+    //--------------------------------------------------------------
+    // FTZ / zero-operand behavior: zero or subnormal (FTZ'd) A or B means
+    // the product term is exactly zero, so the result must equal C
+    // reinterpreted as FP32 (a correctly rounded FP32 + 0 is exact).
+    //--------------------------------------------------------------
+    assert property (@(cb) disable iff (!rst_n)
+        ftz_cond_hist[PIPE_LATENCY-1] |-> (d_o == c_hist[PIPE_LATENCY-1]));
 
-// Subnormal handling assertions
+    //--------------------------------------------------------------
+    // NaN propagation
+    //--------------------------------------------------------------
+    assert property (@(cb) disable iff (!rst_n)
+        nan_cond_hist[PIPE_LATENCY-1] |-> (invalid_o == 1'b1 && is_fp32_nan(d_o)));
 
-// Assert: FTZ behavior for subnormal inputs
-assert property (@(cb) disable iff (!rst_n)
-    valid_i |-> 
-    ((a_i[15:0] == 16'h0000) || (a_i[15:0] != 16'h0000)) &&
-    ((b_i[15:0] == 16'h0000) || (b_i[15:0] != 16'h0000)));
+    //--------------------------------------------------------------
+    // Exception flag consistency with output bit pattern
+    //--------------------------------------------------------------
+    assert property (@(cb) disable iff (!rst_n)
+        valid_o |-> (overflow_o -> (is_fp32_inf(d_o) && !invalid_o)));
 
-// Exception flag generation assertions
+    assert property (@(cb) disable iff (!rst_n)
+        valid_o |-> (underflow_o -> (d_o[30:0] == 31'h0 && !invalid_o)));
 
-// Assert: Overflow flag is set correctly
-assert property (@(cb) disable iff (!rst_n)
-    valid_o |-> 
-    (overflow_o == (d_o[31:0] == 32'h7F800000 || d_o[31:0] == 32'hFF800000)));
+    assert property (@(cb) disable iff (!rst_n)
+        valid_o |-> (invalid_o -> is_fp32_nan(d_o)));
 
-// Assert: Underflow flag is set correctly
-assert property (@(cb) disable iff (!rst_n)
-    valid_o |-> 
-    (underflow_o == (d_o[31:0] != 32'h00000000 && d_o[31:0] != 32'h7F800000 && d_o[31:0] != 32'hFF800000)));
+    //--------------------------------------------------------------
+    // Coverage points
+    //--------------------------------------------------------------
+    cover property (@(cb) disable iff (!rst_n)
+        (valid_i && ready_o) && (is_fp16_nan(a_i) || is_fp16_nan(b_i)));
 
-// Pipeline consistency assertions
+    cover property (@(cb) disable iff (!rst_n)
+        (valid_i && ready_o) && (is_fp16_inf(a_i) || is_fp16_inf(b_i)));
 
-// Assert: Pipeline stages maintain data integrity
-assert property (@(cb) disable iff (!rst_n)
-    valid_i |-> 
-    (valid_o == 1'b1));
+    cover property (@(cb) disable iff (!rst_n)
+        (valid_i && ready_o) && (is_fp16_subnormal(a_i) || is_fp16_subnormal(b_i)));
 
-// Reset behavior assertions
+    cover property (@(cb) disable iff (!rst_n)
+        (valid_i && ready_o) && (a_i == 16'h0000 || b_i == 16'h0000));
 
-// Assert: All registers cleared on reset
-assert property (@(cb) disable iff (!rst_n)
-    !rst_n |-> 
-    (d_o[31:0] == 32'h00000000) &&
-    (valid_o == 1'b0) &&
-    (overflow_o == 1'b0) &&
-    (underflow_o == 1'b0) &&
-    (invalid_o == 1'b0));
+    cover property (@(cb) disable iff (!rst_n) overflow_o);
 
-// Flush-to-Zero verification assertions
+    cover property (@(cb) disable iff (!rst_n) underflow_o);
 
-// Assert: Zero multiplication produces zero result
-assert property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'h0000) || (b_i[15:0] == 16'h0000)) &&
-    valid_o |-> 
-    (d_o[31:0] == 32'h00000000));
+    cover property (@(cb) disable iff (!rst_n)
+        (valid_o && !ready_i)); // pipeline stall / backpressure held
 
-// Assert: Subnormal inputs are flushed to zero
-assert property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'h0001) || 
-     (b_i[15:0] == 16'h0001)) &&
-    valid_o |-> 
-    (d_o[31:0] == 32'h00000000));
+    cover property (@(cb) disable iff (!rst_n)
+        (valid_i && ready_o) ##1 (valid_i && ready_o)); // back-to-back issue
 
-// Overflow targeting positive/negative infinity bit-patterns
-
-// Assert: Overflow produces positive infinity
-assert property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'h7C00) || (b_i[15:0] == 16'h7C00)) &&
-    valid_o |-> 
-    (d_o[31:0] == 32'h7F800000));
-
-// Assert: Overflow produces negative infinity
-assert property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'hFC00) || (b_i[15:0] == 16'hFC00)) &&
-    valid_o |-> 
-    (d_o[31:0] == 32'hFF800000));
-
-// NaN propagation assertions
-
-// Assert: NaN propagation sets invalid flag
-assert property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'h7C00) || 
-     (b_i[15:0] == 16'h7C00) ||
-     (c_i[31:0] == 32'h7F800000)) &&
-    valid_o |-> 
-    invalid_o == 1'b1);
-
-// Coverage points
-
-// Cover: All IEEE 754 special cases
-cover property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'h7C00) || 
-     (b_i[15:0] == 16'h7C00) ||
-     (c_i[31:0] == 32'h7F800000)) &&
-    valid_o);
-
-// Cover: All exception conditions
-cover property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((overflow_o == 1'b1) || 
-     (underflow_o == 1'b1) ||
-     (invalid_o == 1'b1)) &&
-    valid_o);
-
-// Cover: Pipeline operation timing
-cover property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    valid_o);
-
-// Cover: Zero multiplication cases
-cover property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'h0000) || (b_i[15:0] == 16'h0000)) &&
-    valid_o);
-
-// Cover: Subnormal input handling
-cover property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((a_i[15:0] == 16'h0001) || 
-     (b_i[15:0] == 16'h0001)) &&
-    valid_o);
-
-// Cover: Reset during various pipeline states
-cover property (@(cb) disable iff (!rst_n)
-    !rst_n &&
-    valid_o);
-
-// Cover: Overflow detection scenarios
-cover property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((d_o[31:0] == 32'h7F800000) || 
-     (d_o[31:0] == 32'hFF800000)) &&
-    valid_o);
-
-// Cover: Underflow detection scenarios
-cover property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    ((d_o[31:0] != 32'h00000000 && 
-      d_o[31:0] != 32'h7F800000 && 
-      d_o[31:0] != 32'hFF800000)) &&
-    valid_o);
-
-// Latency verification
-
-// Assert: Four-cycle latency is maintained
-assert property (@(cb) disable iff (!rst_n)
-    (valid_i && ready_o) &&
-    valid_o |-> 
-    $past(valid_i, 3) == 1'b1);
-
-endmodule : fp16_mac_checker
-```
+endmodule : fp16_mac_sva

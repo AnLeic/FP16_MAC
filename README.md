@@ -137,3 +137,5 @@ uv pip install crewai crewai-tools
     * Experimented with Autogen, a library from Microsoft. Doesn't seem to need so much customization and bypassing as CrewAI which is promising. However it's becoming clear that, even when provided the IEEE-754 standard, the AI agents are completely incapable of creating functional floating-point arithmetic code. This might be an area where a human mind is still required.
 
 * Experimented with expanding context window to 32k. Not seeing much difference if I'm being honest.
+
+* The models seem to be quantized which impacts their precision which then affects their ability to reason about floating point arithmetic. I think I'm hitting the limit with open-source models, at least for this application, so let's see how Claude Code does.

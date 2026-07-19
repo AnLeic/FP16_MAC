@@ -1,199 +1,99 @@
-# FP16 MAC Unit Specification
+# FP16×FP16 + FP32 Mixed-Precision MAC Unit Specification
 
-## 1. Overview
+## 1. Overview & Scope
+This document defines the microarchitectural and functional specification for a high-throughput, mixed-precision Multiply-Accumulate (MAC) sub-module targeting AI accelerator data paths. The unit computes:
+`D = (A × B) + C`
+where `A` and `B` are IEEE 754 FP16 operands, and `C` and `D` are IEEE 754 FP32 operands. The design prioritizes maximum operating frequency through a strictly balanced 4-stage pipeline, deterministic latency, robust exception handling, and compliance with IEEE 754 rounding and subnormal policies as constrained.
 
-This document specifies the microarchitectural and functional design of a high-performance FP16 Multiply-Accumulate (MAC) unit for AI accelerators. The unit computes D = (A * B) + C with mixed-precision inputs and outputs, implementing IEEE 754 compliance with specific handling for edge cases.
+## 2. Interface Definition
+The module implements a standard synchronous Valid/Ready handshake protocol for both input and output ports. Backpressure is supported via ready signal propagation.
 
-## 2. Functional Specification
+| Signal Name | Direction | Width | Description |
+|-------------|-----------|-------|-------------|
+| `clk_i`     | In        | 1     | Positive-edge system clock |
+| `rst_ni`    | In        | 1     | Active-low asynchronous reset, synchronous release |
+| `valid_i`   | In        | 1     | Input data valid assertion |
+| `ready_o`   | Out       | 1     | Module ready to accept input (high when pipeline stage 0 is empty) |
+| `a_i`       | In        | 16    | FP16 operand A (S:1, E:5, M:10) |
+| `b_i`       | In        | 16    | FP16 operand B (S:1, E:5, M:10) |
+| `c_i`       | In        | 32    | FP32 accumulator operand C (S:1, E:8, M:23) |
+| `valid_o`   | Out       | 1     | Output data valid assertion |
+| `ready_i`   | In        | 1     | Downstream ready to accept output |
+| `d_o`       | Out       | 32    | FP32 result D (S:1, E:8, M:23) |
+| `flags_o`   | Out       | 3     | Exception flags: `[2] Overflow, [1] Underflow, [0] Invalid` |
 
-### 2.1 Operation
-The MAC unit performs the operation: **D = (A × B) + C**
-- **Inputs**: A, B (FP16), C (FP32)
-- **Output**: D (FP32)
-- **Precision**: Mixed-precision computation with FP16 inputs and FP32 output
+**Handshake Protocol Rules:**
+- Data is sampled when `valid_i && ready_o == 1'b1`.
+- Output drives `valid_o == 1'b1` when Stage 3 completes. Result is valid for one cycle unless `ready_i == 1'b0`, in which case it holds until acknowledged.
+- Backpressure stalls the pipeline at the appropriate stage without corrupting state.
 
-### 2.2 Input/Output Interface
-```verilog
-input  logic clk;
-input  logic rst_n;
+## 3. Pipeline Architecture (4-Stage)
+The datapath is partitioned into four balanced combinational segments separated by pipeline registers. Each register includes enable logic driven by a ready-propagation chain to support backpressure.
 
-// Input valid/ready protocol
-input  logic [15:0] a_i;     // FP16 input A
-input  logic [15:0] b_i;     // FP16 input B  
-input  logic [31:0] c_i;     // FP32 input C
-input  logic valid_i;        // Input valid signal
-output logic ready_o;        // Input ready signal
+| Stage | Function | Combinational Logic | Pipeline Register Output |
+|-------|----------|---------------------|--------------------------|
+| **S0** | Input Decode & FTZ | FP16 field extraction, subnormal detection, zero/Inf/NaN classification, control signal generation | Decoded fields, internal control flags, pre-converted mantissas/exponents |
+| **S1** | Multiplication | Exponent addition with bias correction, 11×11 bit mantissa multiplication, sign XOR, product pre-normalization | Product exponent (8b), Product mantissa (22b), Product sign, intermediate flags |
+| **S2** | Alignment & Addition | Exponent comparison, mantissa right-shift alignment, 24-bit two's complement addition, carry generation | Aligned sum mantissa (25b with GRS), sum exponent, pre-round control |
+| **S3** | Normalize & Round | Leading Zero Count (LZC), left/right normalization shift, RNE rounding logic, FP32 packing, exception flag latching | Final `d_o`, `flags_o`, output valid/ready handshake |
 
-// Output valid/ready protocol
-output logic [31:0] d_o;     // FP32 output D
-output logic valid_o;        // Output valid signal
-input  logic ready_i;        // Output ready signal
+**Latency:** 4 clock cycles  
+**Throughput:** 1 MAC/cycle (when `ready_i` is continuously asserted)
 
-// Exception flags
-output logic overflow_o;
-output logic underflow_o;
-output logic invalid_o;
-```
+## 4. Functional Arithmetic Specification
 
-### 2.3 Exception Handling
-- **Overflow**: When result exceeds FP32 maximum representable value
-- **Underflow**: When result is subnormal and FTZ is enabled
-- **Invalid Operation**: NaN inputs or operations producing NaN results
+### 4.1 Input Handling & Flush-to-Zero (FTZ)
+- **Subnormal Detection:** FP16 subnormals are identified by `exp[4:0] == 5'b00000 && man[9:0] != 10'b0`. 
+- **FTZ Policy:** Upon detection, the operand is replaced with exact zero (`exp=0, man=0`). No normalization or hidden-bit insertion is performed for subnormals. This eliminates critical-path subnormal normalization logic in S0.
+- **Special Values:** Zeros, Infinities, and NaNs are tagged via control signals `is_zero`, `is_inf`, `is_nan`. These bypass arithmetic units where applicable to preserve timing.
 
-## 3. Pipeline Architecture
+### 4.2 Multiplication Unit (Stage 1)
+- **Exponent Arithmetic:** `exp_prod = exp_a + exp_b - 15` (FP16 bias removal). Result is sign-extended to 8 bits to match FP32 exponent width.
+- **Mantissa Multiplication:** Effective mantissas include the implicit leading bit for normals: `m_eff = {1'b1, man[9:0]}`. A dedicated 11×11 bit array multiplier computes `man_prod = m_a_eff × m_b_eff`, yielding a 22-bit product.
+- **Sign:** `sign_prod = sign_a ^ sign_b`.
+- **Pre-Normalization:** The product mantissa is left-aligned by 1 position (since `1.M × 1.M` ranges from `1.0...0` to `1.11...1 × 1.11...1 ≈ 3.99`). A single-cycle left shift and exponent decrement prepares the format for Stage 2 alignment.
 
-### 3.1 Pipeline Stages (4-stage)
-```
-Stage 0: Input Processing & Conversion
-Stage 1: Multiplication
-Stage 2: Addition
-Stage 3: Rounding & Output Formatting
-```
+### 4.3 Alignment & Addition Unit (Stage 2)
+- **Exponent Comparison:** `exp_diff = exp_prod - exp_c`. If `exp_diff < 0`, C's mantissa is shifted right; otherwise, product mantissa shifts right. Shift amount is clamped to ≤24 to prevent precision loss beyond sticky bit generation.
+- **Mantissa Alignment:** The smaller operand's mantissa is right-shifted using a barrel shifter. Lower bits are OR-reduced to form the initial Sticky bit.
+- **Addition:** Aligned mantissas (extended to 25 bits: 23 significant + Guard + Round) are added/subtracted based on sign comparison. Two's complement addition handles mixed signs natively. Carry-out is captured for overflow detection.
 
-### 3.2 Stage Details
+### 4.4 Normalization & RNE Rounding (Stage 3)
+- **Normalization:** 
+  - *Left Shift:* If MSB of sum mantissa is 0, a Leading Zero Counter (LZC) determines shift amount. Mantissa left-shifts, exponent decrements accordingly.
+  - *Right Shift:* If addition generates a carry into bit 24, mantissa right-shifts by 1, exponent increments.
+- **RNE Rounding Logic:** After normalization, the mantissa is truncated to 23 bits. Three LSBs are extracted:
+  - `Round (R)`: Bit 23 (immediately after truncation point)
+  - `Tie (T)`: Bit 24 (MSB of discarded portion)
+  - `Sticky (S)`: OR-reduction of all bits below T
+  - **RNE Decision:** If `R == 1 && (S == 1 || T == 1)`, increment the 23-bit mantissa. This may trigger a secondary right-shift and exponent increment if rounding causes overflow into bit 24.
+- **Packing:** Final sign, biased exponent, and rounded mantissa are concatenated into IEEE 754 FP32 format.
 
-#### Stage 0: Input Processing & Conversion
-- **Function**: Convert FP16 inputs to internal extended precision
-- **Operations**:
-  - Parse FP16 inputs A and B
-  - Handle subnormal inputs with FTZ
-  - Convert to extended precision (48-bit mantissa + 16-bit exponent)
-  - Validate input formats
+## 5. Exception Handling & Flag Generation
+Exception flags are computed combinatorially in Stage 3 and latched with the output. Flags follow IEEE 754 semantics adapted for FTZ/RNE constraints.
 
-#### Stage 1: Multiplication
-- **Function**: Perform FP16 × FP16 multiplication
-- **Operations**:
-  - Multiply significands (48-bit × 48-bit = 96-bit result)
-  - Add exponents with bias adjustment
-  - Handle special cases (zero, infinity, NaN)
-  - Normalize intermediate result
+| Exception | Detection Condition | Action on `d_o` | Flag Behavior |
+|-----------|---------------------|-----------------|---------------|
+| **Invalid** (`flags_o[0]`) | - Any input is NaN (QNaN or SNaN)<br>- `Inf × 0` or `0 × Inf`<br>- `Inf + (-Inf)` during accumulation | Output Quiet NaN (`0x7FC00000` or sign-preserving) | Asserted for the cycle of result output |
+| **Overflow** (`flags_o[1]`) | Normalized exponent > 254 (FP32 max) after rounding | Output signed Infinity (`sign || {8'hFF, 23'h0}`) | Asserted; RNE rounding applied before clamping to Inf |
+| **Underflow** (`flags_o[2]`) | Normalized result magnitude < `2^-126` (min FP32 normal) AND inexact after rounding | Flush to signed Zero (`sign || 31'h0`) | Asserted only if result is tiny and inexact. FTZ policy applies; no subnormal output generated. |
 
-#### Stage 2: Addition
-- **Function**: Add FP32 accumulator C to multiplication result
-- **Operations**:
-  - Align exponents of multiplication result and C
-  - Perform addition/subtraction of significands
-  - Handle exponent overflow/underflow
-  - Maintain extended precision during computation
+**Flag Latching Rule:** Flags correspond strictly to the `d_o` value on the same cycle. If backpressure stalls Stage 3, flags hold until `ready_i` asserts.
 
-#### Stage 3: Rounding & Output Formatting
-- **Function**: Round to FP32 and format output
-- **Operations**:
-  - Apply Round-to-Nearest-Even (RNE) rounding
-  - Convert extended precision result to FP32 format
-  - Generate exception flags
-  - Format final IEEE 754 FP32 output
+## 6. Timing, Backpressure & Performance
+- **Critical Path:** Stage 2 (Alignment + 25-bit Adder) and Stage 3 (LZC + RNE logic) are typically timing-critical. Barrel shifter depth is limited to 24 bits; LZC uses a tree-based O(log N) structure for predictable delay.
+- **Backpressure Propagation:** `ready_o` is generated as `~pipe_full[0]`. Inter-stage ready signals (`rdy_1`, `rdy_2`, `rdy_3`) are derived from downstream readiness. Pipeline registers use `en = valid_stage && rdy_next` to prevent overwriting stalled data.
+- **Frequency Target:** Balanced stage delays enable >800 MHz on 5nm/7nm nodes. Combinational logic per stage is capped at ~1.2 ns equivalent delay.
 
-## 4. IEEE 754 Compliance
+## 7. RTL Implementation Guidelines
+1. **Register Clustering:** Group pipeline registers with their combinational logic to minimize routing congestion. Use `(* pipeline_reg *)` or vendor-specific attributes for retiming control.
+2. **Multiplier Selection:** Instantiate a dedicated DSP/ALU macro for the 11×11 bit multiplication if available. Otherwise, use a Wallace-tree multiplier optimized for area-delay product.
+3. **LZC Implementation:** Use a hierarchical LZC (e.g., 8→4→2→1) rather than a linear counter to guarantee logarithmic delay. Mask leading zeros based on sign-extension alignment.
+4. **RNE Combinational Block:** Implement rounding as a pure combinational block post-adder. Avoid sequential rounding states to maintain single-cycle Stage 3 throughput.
+5. **Reset Strategy:** Synchronous reset deassertion only. Pipeline registers clear to zero; control flags default to `3'b0`. Output drives `valid_o=0` during reset.
+6. **Verification Hooks:** Provide internal test ports for injecting special FP16/FP32 patterns (NaN, Inf, subnormals) and bypassing FTZ for corner-case validation.
 
-### 4.1 Rounding Mode
-- **Round-to-Nearest-Even (RNE)** applied in:
-  - Normalization phase
-  - Truncation for FP32 conversion
-  - Intermediate precision handling
-
-### 4.2 Subnormal Handling
-- **Flush-to-Zero (FTZ) approach**:
-  - All subnormal inputs are treated as zero
-  - Subnormal outputs are flushed to zero
-  - Exception flag set when subnormal input detected
-
-### 4.3 Special Cases
-| Input Combination | Output Behavior |
-|-------------------|-----------------|
-| Any operand NaN   | Result = NaN, Invalid flag set |
-| Infinity × Zero   | Result = NaN, Invalid flag set |
-| Infinity × Infinity | Result = Infinity with sign |
-| Zero × Infinity   | Result = NaN, Invalid flag set |
-
-## 5. Exception Detection and Flagging
-
-### 5.1 Exception Flags
-```verilog
-output logic overflow_o;    // Set when result overflows FP32 range
-output logic underflow_o;   // Set when result underflows FP32 range  
-output logic invalid_o;     // Set for invalid operations (NaN, inf×0, etc.)
-```
-
-### 5.2 Detection Logic
-
-#### Overflow Detection
-- **Condition**: Result exponent > 127 (FP32 max exponent)
-- **Action**: Set overflow_o flag, output infinity with appropriate sign
-
-#### Underflow Detection  
-- **Condition**: Result exponent < -126 (FP32 min normal exponent)
-- **Action**: Set underflow_o flag, flush to zero if FTZ enabled
-
-#### Invalid Operation Detection
-- **NaN inputs**: Any operand is NaN → set invalid_o
-- **Indeterminate forms**: 0 × ∞, ∞ ÷ ∞, etc. → set invalid_o
-- **Invalid operations**: Division by zero (non-NaN) → set invalid_o
-
-## 6. Timing and Performance
-
-### 6.1 Clock Frequency
-- **Target**: Maximum frequency of 1 GHz
-- **Pipeline Depth**: 4 stages
-- **Latency**: 4 cycles from valid input to valid output
-
-### 6.2 Throughput
-- **Issue Rate**: 1 MAC operation per cycle
-- **Completion Rate**: 1 result per cycle (after 4-cycle latency)
-
-## 7. Mathematical Edge Cases
-
-### 7.1 Subnormal Input Handling
-```c
-if (input_is_subnormal) {
-    input_value = 0.0;  // FTZ: flush to zero
-    underflow_flag = 1;
-}
-```
-
-### 7.2 Overflow Scenarios
-- **Positive overflow**: Result > +3.4028235e+38
-- **Negative overflow**: Result < -3.4028235e+38  
-- **Output**: ±∞ with appropriate sign
-
-### 7.3 Underflow Scenarios
-- **Subnormal results**: Exponent < -126
-- **FTZ behavior**: Results flushed to zero
-- **Exception flag**: Set for subnormal input detection
-
-## 8. Implementation Constraints
-
-### 8.1 Hardware Resources
-- **Logic gates**: Optimized for high-frequency operation
-- **Memory**: Minimal internal registers (4 pipeline stages)
-- **Multipliers**: 48×48 bit multiplier for intermediate computation
-- **Adders**: Extended precision adders for accumulation phase
-
-### 8.2 Power Considerations
-- **Dynamic power**: Minimized through pipelining and clock gating
-- **Static power**: Optimized gate sizing for target frequency
-- **Clock gating**: Enabled at pipeline stage boundaries
-
-### 8.3 Area Optimization
-- **Critical path**: Minimize propagation delay through key logic
-- **Register usage**: 4-stage pipeline with minimal register overhead
-- **Reusability**: Modular design supporting multiple MAC units in array
-
-## 9. Verification Plan
-
-### 9.1 Test Vectors
-- Standard arithmetic operations
-- Edge case inputs (zero, infinity, NaN)
-- Subnormal number handling
-- Overflow/underflow conditions
-- Rounding behavior verification
-
-### 9.2 Coverage Metrics
-- **Functional coverage**: 100% IEEE 754 compliance
-- **Exception coverage**: All exception conditions tested
-- **Timing coverage**: Full pipeline operation verified
-- **Corner case coverage**: Subnormal, overflow, underflow scenarios
-
-## 10. Summary
-
-This FP16 MAC unit specification defines a high-performance mixed-precision compute block optimized for AI accelerator applications. The design implements IEEE 754 compliance with FTZ handling, RNE rounding, and comprehensive exception detection while maintaining optimal pipeline depth for maximum frequency operation.
+---
+**Document Version:** 1.0  
+**Target Technology:** Advanced FinFET/GAA AI Accelerator PDKs  
+**Compliance:** IEEE 754-2019 (FP16/FP32), RNE, FTZ, Valid/Ready AXI-Stream Compatible

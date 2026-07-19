@@ -1,4 +1,3 @@
-```systemverilog
 // File: tb_fp16_mac.sv
 // Description: Testbench for FP16 MAC unit verification
 //              Tests the RTL implementation against specification and verification plan
@@ -45,12 +44,15 @@ module tb_fp16_mac;
         .invalid_o(invalid_o)
     );
 
-    // Clock generation
-    always #5 clk = ~clk;  // 10ns period clock (100MHz)
+    // Clock generation (clk explicitly initialized here to avoid a race
+    // against the reset-sequence initial block leaving it at X)
+    initial begin
+        clk = 1'b0;
+        forever #5 clk = ~clk;  // 10ns period clock (100MHz)
+    end
 
     // Reset sequence
     initial begin
-        clk = 0;
         rst_n = 0;
         
         // Apply reset for 20ns
@@ -113,18 +115,16 @@ module tb_fp16_mac;
         
         // Set inputs for 1.0 * 2.0 + 3.0
         a_i = 16'h3C00;  // 1.0 in FP16 (sign=0, exp=15, mant=0)
-        b_i = 16'h4000;  // 2.0 in FP16 (sign=0, exp=15, mant=0) 
-        c_i = 32'h40A00000;  // 5.0 in FP32 (sign=0, exp=128, mant=512)
+        b_i = 16'h4000;  // 2.0 in FP16 (sign=0, exp=15, mant=0)
+        c_i = 32'h40400000;  // 3.0 in FP32 (sign=0, exp=128, mant=0.5)
         
         valid_i = 1'b1;
         
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
+        wait (valid_o === 1'b1);
         
         // Check result
         if (d_o == 32'h40A00000) begin
@@ -135,7 +135,7 @@ module tb_fp16_mac;
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
     // Test 2: Zero multiplication
     task test_zero_multiplication();
@@ -148,13 +148,11 @@ module tb_fp16_mac;
         
         valid_i = 1'b1;
         
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
+        wait (valid_o === 1'b1);
         
         // Check result (0 * 2.0 + 2.0 = 2.0)
         if (d_o == 32'h40000000) begin
@@ -165,7 +163,7 @@ module tb_fp16_mac;
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
     // Test 3: Subnormal inputs with FTZ
     task test_subnormal_inputs();
@@ -178,13 +176,11 @@ module tb_fp16_mac;
         
         valid_i = 1'b1;
         
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
+        wait (valid_o === 1'b1);
         
         // Check result (0 * 2.0 + 2.0 = 2.0)
         if (d_o == 32'h40000000) begin
@@ -195,26 +191,24 @@ module tb_fp16_mac;
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
     // Test 4: NaN propagation
     task test_nan_propagation();
         $display("Test 4: NaN propagation");
         
         // Set one operand to NaN
-        a_i = 16'h7C00;  // NaN in FP16
+        a_i = 16'h7E00;  // Quiet NaN in FP16 (exp=all-1s, mantissa!=0)
         b_i = 16'h4000;  // 2.0 in FP16
         c_i = 32'h40000000;  // 2.0 in FP32
         
         valid_i = 1'b1;
         
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
+        wait (valid_o === 1'b1);
         
         // Check that invalid flag is set
         if (invalid_o == 1'b1) begin
@@ -225,7 +219,7 @@ module tb_fp16_mac;
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
     // Test 5: Infinity operations
     task test_infinity_operations();
@@ -238,13 +232,11 @@ module tb_fp16_mac;
         
         valid_i = 1'b1;
         
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
+        wait (valid_o === 1'b1);
         
         // Check result (infinity * 2.0 + 2.0 = infinity)
         if ((d_o[31] == 1'b1 && d_o[30:23] == 8'hFF) || 
@@ -256,7 +248,7 @@ module tb_fp16_mac;
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
     // Test 6: Overflow detection
     task test_overflow_detection();
@@ -269,13 +261,11 @@ module tb_fp16_mac;
         
         valid_i = 1'b1;
         
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
+        wait (valid_o === 1'b1);
         
         // Check that overflow flag is set
         if (overflow_o == 1'b1) begin
@@ -286,61 +276,64 @@ module tb_fp16_mac;
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
-    // Test 7: Underflow detection
+    // Test 7: FTZ-to-exact-zero is NOT underflow
     task test_underflow_detection();
-        $display("Test 7: Underflow detection");
-        
-        // Set inputs that will cause underflow
+        $display("Test 7: FTZ result is exact zero, underflow must NOT assert");
+
+        // Both operands subnormal FP16 (flushed to zero by FTZ), C is zero.
+        // The mathematically exact result is 0.0 -- IEEE 754 does not flag
+        // underflow for an exact-zero result, only for loss of precision.
         a_i = 16'h0001;  // Subnormal FP16 value
-        b_i = 16'h0001;  // Subnormal FP16 value  
+        b_i = 16'h0001;  // Subnormal FP16 value
         c_i = 32'h00000000;  // Zero in FP32
-        
+
         valid_i = 1'b1;
-        
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
-        
-        // Check that underflow flag is set (due to FTZ)
-        if (underflow_o == 1'b1) begin
-            $display("PASS: Underflow detection works correctly");
+        wait (valid_o === 1'b1);
+
+        // Exact zero result: underflow_o must be clear
+        if (underflow_o == 1'b0 && d_o == 32'h00000000) begin
+            $display("PASS: FTZ exact-zero result does not assert underflow");
         end else begin
-            $display("FAIL: Underflow detection did not set underflow flag");
+            $display("FAIL: underflow_o=%b d_o=%h, expected underflow_o=0, d_o=00000000",
+                      underflow_o, d_o);
         end
-        
+
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
     // Test 8: Pipeline stall and resume
     task test_pipeline_stall();
         $display("Test 8: Pipeline stall and resume");
-        
+
+        // Let any prior transaction fully drain (valid_o deassert) before
+        // touching ready_i -- clearing it in the same edge as a pending
+        // drain would freeze the stale result in place instead.
+        @(posedge clk);
+        #1;
+
         // Send data with ready_i = 0 (stall pipeline)
         ready_i = 1'b0;
-        
+
         a_i = 16'h3C00;  // 1.0 in FP16
         b_i = 16'h4000;  // 2.0 in FP16
         c_i = 32'h40000000;  // 2.0 in FP32
         
         valid_i = 1'b1;
-        
-        // Wait for input to be accepted (should not happen due to stall)
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Resume pipeline
         ready_i = 1'b1;
-        
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
+        wait (valid_o === 1'b1);
         
         // Check result (1.0 * 2.0 + 2.0 = 4.0)
         if (d_o == 32'h40800000) begin
@@ -351,57 +344,55 @@ module tb_fp16_mac;
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
     // Test 9: Back-to-back operations
     task test_back_to_back_operations();
         $display("Test 9: Back-to-back operations");
         
-        // First operation: 1.0 * 2.0 + 3.0 = 5.0
+        // First operation: 1.0 * 2.0 + 5.0 = 7.0
         a_i = 16'h3C00;  // 1.0 in FP16
         b_i = 16'h4000;  // 2.0 in FP16
         c_i = 32'h40A00000;  // 5.0 in FP32
-        
+
         valid_i = 1'b1;
-        
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
-        
-        if (d_o == 32'h40A00000) begin
-            $display("PASS: First operation result = 5.0");
+        wait (valid_o === 1'b1);
+
+        if (d_o == 32'h40E00000) begin
+            $display("PASS: First operation result = 7.0");
         end else begin
-            $display("FAIL: First operation result = %h, expected = 40A00000", d_o);
+            $display("FAIL: First operation result = %h, expected = 40E00000", d_o);
         end
-        
-        // Second operation: 2.0 * 3.0 + 1.0 = 7.0
+
+        // Let the first result's valid_o deassert before issuing the
+        // second -- otherwise the wait() below would trivially pass on
+        // the still-lingering first result instead of the new one.
+        wait (valid_o === 1'b0);
+
+        // Second operation: 2.0 * 3.0 + 4.0 = 10.0
         a_i = 16'h4000;  // 2.0 in FP16
-        b_i = 16'h4400;  // 3.0 in FP16
+        b_i = 16'h4200;  // 3.0 in FP16 (exp=16, mant=0.5)
         c_i = 32'h40800000;  // 4.0 in FP32
-        
+
         valid_i = 1'b1;
-        
-        // Wait for input to be accepted
         @(posedge clk);
-        while (!ready_o) @(posedge clk);
-        
+        #1 valid_i = 1'b0;
+
         // Wait for output to be valid
-        @(posedge clk);
-        while (!valid_o) @(posedge clk);
-        
-        if (d_o == 32'h41C00000) begin
-            $display("PASS: Second operation result = 7.0");
+        wait (valid_o === 1'b1);
+
+        if (d_o == 32'h41200000) begin
+            $display("PASS: Second operation result = 10.0");
         end else begin
-            $display("FAIL: Second operation result = %h, expected = 41C00000", d_o);
+            $display("FAIL: Second operation result = %h, expected = 41200000", d_o);
         end
         
         valid_i = 1'b0;
         @(posedge clk);
-    end
+    endtask
 
 endmodule : tb_fp16_mac
-```
