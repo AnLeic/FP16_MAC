@@ -49,6 +49,15 @@ module fp16_mac_sva (
     function automatic bit is_fp16_subnormal(logic [15:0] v);
         return (v[14:10] == 5'b0) && (v[9:0] != 10'b0);
     endfunction
+    function automatic bit is_fp16_zero(logic [15:0] v);
+        return v[14:0] == 15'b0; // +0 and -0
+    endfunction
+    function automatic bit is_fp32_zero(logic [31:0] v);
+        return v[30:0] == 31'b0; // +0 and -0
+    endfunction
+    function automatic bit is_fp32_subnormal(logic [31:0] v);
+        return (v[30:23] == 8'b0) && (v[22:0] != 23'b0);
+    endfunction
     function automatic bit is_fp32_nan(logic [31:0] v);
         return (v[30:23] == 8'hFF) && (v[22:0] != 23'b0);
     endfunction
@@ -61,17 +70,31 @@ module fp16_mac_sva (
     // clock so assertions can reference "N cycles ago" without $past().
     //--------------------------------------------------------------
     logic prev_rst_n;
-    logic accept_hist   [PIPE_LATENCY:0];
-    logic [31:0] c_hist [PIPE_LATENCY:0];
-    logic ftz_cond_hist [PIPE_LATENCY:0];
-    logic nan_cond_hist [PIPE_LATENCY:0];
+    logic accept_hist    [PIPE_LATENCY:0];
+    logic [31:0] c_hist  [PIPE_LATENCY:0];
+    logic ftz_cond_hist  [PIPE_LATENCY:0];
+    logic ftz_c0_hist    [PIPE_LATENCY:0];
+    logic nan_cond_hist  [PIPE_LATENCY:0];
 
     wire accept_now = valid_i && ready_o;
-    wire ftz_cond_now = accept_now &&
-        ((a_i == 16'h0000) || (b_i == 16'h0000) ||
+
+    // Product term is exactly zero after FTZ: A or B is +/-0 or subnormal
+    // (note 16'h8000 is negative zero -- an equality check against 16'h0000
+    // alone would miss it), with no NaN/Inf anywhere to preempt the result.
+    wire prod_zero_now =
+        (is_fp16_zero(a_i) || is_fp16_zero(b_i) ||
          is_fp16_subnormal(a_i) || is_fp16_subnormal(b_i)) &&
         !is_fp16_nan(a_i) && !is_fp16_nan(b_i) && !is_fp32_nan(c_i) &&
         !is_fp16_inf(a_i) && !is_fp16_inf(b_i) && !is_fp32_inf(c_i);
+
+    // Split by C: only a *normal* C passes through bit-exactly. A subnormal
+    // C is itself FTZ'd and a +/-0 C follows IEEE zero-sign rules, so those
+    // cases must assert a zero-magnitude result, not d_o == C.
+    wire ftz_cond_now = accept_now && prod_zero_now &&
+        !is_fp32_zero(c_i) && !is_fp32_subnormal(c_i);
+    wire ftz_c0_now = accept_now && prod_zero_now &&
+        (is_fp32_zero(c_i) || is_fp32_subnormal(c_i));
+
     wire nan_cond_now = accept_now &&
         (is_fp16_nan(a_i) || is_fp16_nan(b_i) || is_fp32_nan(c_i));
 
@@ -80,11 +103,13 @@ module fp16_mac_sva (
         accept_hist[0]   <= accept_now;
         c_hist[0]        <= c_i;
         ftz_cond_hist[0] <= ftz_cond_now;
+        ftz_c0_hist[0]   <= ftz_c0_now;
         nan_cond_hist[0] <= nan_cond_now;
         for (int k = 1; k <= PIPE_LATENCY; k++) begin
             accept_hist[k]   <= accept_hist[k-1];
             c_hist[k]        <= c_hist[k-1];
             ftz_cond_hist[k] <= ftz_cond_hist[k-1];
+            ftz_c0_hist[k]   <= ftz_c0_hist[k-1];
             nan_cond_hist[k] <= nan_cond_hist[k-1];
         end
     end
@@ -116,11 +141,16 @@ module fp16_mac_sva (
 
     //--------------------------------------------------------------
     // FTZ / zero-operand behavior: zero or subnormal (FTZ'd) A or B means
-    // the product term is exactly zero, so the result must equal C
-    // reinterpreted as FP32 (a correctly rounded FP32 + 0 is exact).
+    // the product term is exactly zero, so a *normal* C must pass through
+    // bit-exactly (a correctly rounded FP32 + 0 is exact). When C itself is
+    // zero or subnormal, the result magnitude must be zero (sign follows
+    // IEEE zero-sign rules and is not constrained here).
     //--------------------------------------------------------------
     assert property (@(cb) disable iff (!rst_n)
         ftz_cond_hist[PIPE_LATENCY-1] |-> (d_o == c_hist[PIPE_LATENCY-1]));
+
+    assert property (@(cb) disable iff (!rst_n)
+        ftz_c0_hist[PIPE_LATENCY-1] |-> (d_o[30:0] == 31'h0));
 
     //--------------------------------------------------------------
     // NaN propagation

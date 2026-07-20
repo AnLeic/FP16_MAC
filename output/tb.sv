@@ -71,6 +71,17 @@ initial begin
     apply(16'h7E00, 16'h4000, 32'h40000000, 32'h7FC00000, "NaNx2+2=NaN");
     // Infinity propagation
     apply(16'h7C00, 16'h4000, 32'h40000000, 32'h7F800000, "Infx2+2=Inf");
+    // zero product but B has a large exponent: the phantom product exponent
+    // must not out-rank C and shift it away -- result is C exactly
+    apply(16'h0000, 16'h7BFF, 32'h00800000, 32'h00800000, "0xMax+tinyC=C");
+    // negative zero operand takes the FTZ path too (16'h8000 = -0.0)
+    apply(16'h8000, 16'h4000, 32'h40000000, 32'h40000000, "-0x2+2=2");
+    // exact cancellation of opposite signs is +0 under RNE
+    apply(16'hBC00, 16'h4000, 32'h40000000, 32'h00000000, "-1x2+2=+0");
+    // (+0 product) + (-0 C) = +0 per IEEE zero-sign rules
+    apply(16'h0000, 16'h4000, 32'h80000000, 32'h00000000, "0x2+(-0)=+0");
+    // same-sign zeros keep their sign: (-0 product) + (-0 C) = -0
+    apply(16'h8000, 16'h4000, 32'h80000000, 32'h80000000, "-0x2+(-0)=-0");
 
     if (errors == 0) $display("ALL TESTS PASSED");
     else $display("%0d TEST(S) FAILED", errors);

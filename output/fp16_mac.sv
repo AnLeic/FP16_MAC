@@ -175,7 +175,10 @@ module fp16_mac (
     logic signed [9:0] exp_diff;
     logic prod_ge_c;
     assign exp_diff  = s2_prod_exp - s2_c_exp;
-    assign prod_ge_c = (exp_diff >= 0);
+    // A zero product still carries a phantom exponent from B (its own exp
+    // field was FTZ'd but B's wasn't), which can exceed C's and shift C out
+    // entirely -- a zero operand must always lose the big/small selection.
+    assign prod_ge_c = !s2_prod_zero && (s2_c_zero || (exp_diff >= 0));
 
     logic [9:0] shift_amt;
     assign shift_amt = prod_ge_c ? exp_diff[9:0] : (-exp_diff[9:0]);
@@ -214,9 +217,15 @@ module fp16_mac (
         if (big_sign == small_sign) begin
             sum_mag  = {1'b0, big_mag} + {1'b0, small_shifted};
             sum_sign = big_sign;
-        end else if (big_mag >= small_shifted) begin
+        end else if (big_mag > small_shifted) begin
             sum_mag  = {1'b0, big_mag} - {1'b0, small_shifted};
             sum_sign = big_sign;
+        end else if (big_mag == small_shifted) begin
+            // exact cancellation of opposite signs is +0 under RNE; if sticky
+            // bits were lost the true result is a tiny remnant of the smaller
+            // operand's sign (magnitude flushes to zero downstream)
+            sum_mag  = '0;
+            sum_sign = shift_sticky ? small_sign : 1'b0;
         end else begin
             sum_mag  = {1'b0, small_shifted} - {1'b0, big_mag};
             sum_sign = small_sign;
